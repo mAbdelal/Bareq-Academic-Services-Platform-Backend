@@ -1,0 +1,741 @@
+generator client {
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "windows", "debian-openssl-3.0.x"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ========== COMMON ENUMS ==========
+enum FileType {
+  general
+  gallery_image
+  gallery_video
+  cover
+}
+// ========== MODELS ==========
+
+// ========== START COMMON MODELS ==========
+model JobTitles {
+  id          Int      @id @default(autoincrement())
+  title_ar    String
+  title_en    String?
+  usage_count Int      @default(0)
+  created_at  DateTime @default(now()) @db.Timestamptz
+  updated_at  DateTime @default(now()) @db.Timestamptz
+
+  @@unique([title_ar])
+  @@index([title_ar])
+  @@index([title_en])
+}
+
+model Skills {
+  id          Int      @id @default(autoincrement())
+  name        String   @unique
+  usage_count Int      @default(0)
+  created_at  DateTime @default(now()) @db.Timestamptz
+  updated_at  DateTime @default(now()) @db.Timestamptz
+
+  @@index([name])
+}
+// ========== END COMMON MODELS ==========
+
+// ========== START USER TYPES MODELS ==========
+enum AcademicStatus {
+  high_school_student // Currently in high school
+  high_school_graduate // Completed high school (e.g. diploma received)
+  bachelor_student // Currently studying for bachelor’s degree
+  bachelor // Completed bachelor’s degree
+  master_student // Currently studying for master’s degree
+  master // Completed master’s degree
+  phd_candidate // Enrolled in PhD program (studying/researching)
+  phd // Completed PhD
+  alumni // General graduate status (any degree, for generality)
+  researcher // Researcher (not necessarily student or alumni)
+  other // Any other unspecified academic status
+}
+
+model Users {
+  id                     String    @id @default(uuid()) @db.Uuid
+  avatar                 String?
+  username               String    @unique
+  email                  String    @unique
+  password_hash          String
+  first_name_ar          String
+  last_name_ar           String
+  full_name_en           String
+  is_active              Boolean   @default(true)
+  created_at             DateTime  @default(now()) @db.Timestamptz
+  updated_at             DateTime  @default(now()) @db.Timestamptz
+  reset_password_token   String?
+  reset_password_expires DateTime?
+
+  admin             Admins?
+  academicUser      AcademicUsers?
+  notifications     Notifications[]
+  messages          Messages[]
+  purchaseTimelines PurchaseTimeline[]
+
+  @@index([username])
+  @@index([email])
+  @@index([is_active])
+}
+
+model Admins {
+  user_id    String   @id @db.Uuid
+  role_id    Int
+  created_at DateTime @default(now()) @db.Timestamptz
+  updated_at DateTime @default(now()) @db.Timestamptz
+
+  user             Users          @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  role             Roles          @relation(fields: [role_id], references: [id])
+  transactions     Transactions[]
+  approvedServices Services[]     @relation("AdminApprovedServices")
+  resolvedDisputes Disputes[]     @relation("AdminsToResolvedDisputes")
+}
+
+model AcademicUsers {
+  user_id               String          @id @db.Uuid
+  identity_document_url String?
+  academic_status       AcademicStatus?
+  university            String?
+  faculty               String?
+  major                 String?
+  study_start_year      Int?
+  study_end_year        Int?
+  job_title             String?
+  skills                String[]
+  rating                Float?          @default(0.0)
+  ratings_count         Int             @default(0)
+  created_at            DateTime        @default(now()) @db.Timestamptz
+  updated_at            DateTime        @default(now()) @db.Timestamptz
+
+  user                    Users                 @relation(fields: [user_id], references: [id], onDelete: Cascade, map: "fk_academic_user_users")
+  balance                 UserBalances?         @relation("AcademicUserBalance")
+  services                Services[]            @relation("ProviderServices")
+  requestedCustomRequests CustomRequests[]      @relation("RequesterRequests")
+  ratingsGiven            Ratings[]             @relation("RatingsGiven")
+  transactions            Transactions[]
+  complaintsMade          Disputes[]            @relation("ComplainantDisputes")
+  complaintsReceived      Disputes[]            @relation("RespondentDisputes")
+  purchases               ServicePurchases[]    @relation("BuyerPurchases")
+  CustomRequestOffers     CustomRequestOffers[]
+  works                   Works[]               @relation("AcademicUserWorks")
+
+  @@index([major])
+  @@index([job_title])
+  @@index([rating])
+}
+// ========== END USER TYPES MODELS ==========
+
+// ========== START ROLES PERMISSIONS MODELS ==========
+model Roles {
+  id          Int      @id @default(autoincrement())
+  name        String   @unique
+  description String?
+  created_at  DateTime @default(now()) @db.Timestamptz
+  updated_at  DateTime @default(now()) @db.Timestamptz
+
+  admins      Admins[]
+  permissions RolePermission[]
+
+  @@index([name])
+}
+
+model Permissions {
+  id          Int      @id @default(autoincrement())
+  name        String   @unique
+  description String?
+  created_at  DateTime @default(now()) @db.Timestamptz
+  updated_at  DateTime @default(now()) @db.Timestamptz
+
+  roles RolePermission[]
+
+  @@index([name])
+}
+
+model RolePermission {
+  role_id       Int
+  permission_id Int
+
+  role       Roles       @relation(fields: [role_id], references: [id], onDelete: Cascade)
+  permission Permissions @relation(fields: [permission_id], references: [id], onDelete: Cascade)
+
+  @@id([role_id, permission_id])
+}
+
+// ========== END ROLES PERMISSIONS MODELS ==========
+
+// ========== START AcademicCategorys MODELS ==========
+model AcademicCategorys {
+  id          Int      @id @default(autoincrement())
+  name        String   @unique
+  description String?
+  is_active   Boolean  @default(true)
+  created_at  DateTime @default(now()) @db.Timestamptz
+  updated_at  DateTime @default(now()) @db.Timestamptz
+
+  subcategories  AcademicSubcategorys[]
+  services       Services[]
+  customRequests CustomRequests[]
+  works          Works[]                @relation("AcademicCategoryWorks")
+
+  @@index([name])
+  @@index([is_active])
+}
+
+model AcademicSubcategorys {
+  id          Int      @id @default(autoincrement())
+  category_id Int
+  name        String
+  description String?
+  is_active   Boolean  @default(true)
+  created_at  DateTime @default(now()) @db.Timestamptz
+  updated_at  DateTime @default(now()) @db.Timestamptz
+
+  category       AcademicCategorys @relation(fields: [category_id], references: [id], onDelete: Cascade)
+  services       Services[]
+  customRequests CustomRequests[]
+  works          Works[]           @relation("AcademicSubcategoryWorks")
+
+  @@unique([category_id, name])
+  @@index([name])
+  @@index([is_active])
+}
+
+// ========== END AcademicCategorys MODELS ==========
+
+// ========== START Works MODELS ==========
+model Works {
+  id               String   @id @default(uuid()) @db.Uuid
+  user_id          String   @db.Uuid
+  title            String
+  description      String
+  skills           String[] // Array of keywords or technologies
+  category_id      Int
+  subcategory_id   Int?
+  achievement_date DateTime @db.Timestamptz
+  created_at       DateTime @default(now()) @db.Timestamptz
+  updated_at       DateTime @default(now()) @db.Timestamptz
+
+  user        AcademicUsers         @relation("AcademicUserWorks", fields: [user_id], references: [user_id], onDelete: Cascade)
+  category    AcademicCategorys     @relation("AcademicCategoryWorks", fields: [category_id], references: [id])
+  subcategory AcademicSubcategorys? @relation("AcademicSubcategoryWorks", fields: [subcategory_id], references: [id])
+  attachments WorkAttachments[]
+
+  @@index([user_id])
+  @@index([category_id])
+  @@index([subcategory_id])
+  @@index([achievement_date])
+}
+
+model WorkAttachments {
+  id          String   @id @default(uuid()) @db.Uuid
+  work_id     String   @db.Uuid
+  file_url    String
+  file_name   String
+  file_type   FileType
+  uploaded_at DateTime @default(now()) @db.Timestamptz
+
+  work Works @relation(fields: [work_id], references: [id], onDelete: Cascade)
+}
+// ========== END Works MODELS ==========
+
+// ========== START Services MODELS ==========
+enum ServicePurchaseRole {
+  buyer
+  provider
+  admin
+}
+
+enum ServicePurchaseStatus {
+  pending // Purchase made, waiting for provider acceptance
+  provider_rejected // provider rejected the purchase
+  in_progress // Provider is working on the submission
+  submitted // Provider submitted the submission
+  disputed_by_provider // Dispute initiated by provider
+  disputed_by_buyer // Dispute initiated by buyer
+  completed // Purchase fully completed and closed
+}
+
+enum ServicePurchaseAction {
+  Purchase // Initial purchase by buyer
+  ProviderAccepted // Provider accepted the purchase
+  ProviderRejected // Provider rejected the purchase
+  Submitted // Provider submitted the service
+  DisputeByProvider // Provider initiated a dispute
+  DisputeByBuyer // Buyer initiated a dispute
+  BuyerRejected // Buyer rejected the submission
+  Completed // Buyer accepted the submission
+
+  AdminRefundBuyer // Admin refunded buyer fully
+  AdminPayProvider // Admin paid provider fully
+  AdminSplitPayment // Admin split payment 50/50
+  AdminChargeBoth // Admin penalized both parties
+  AdminAskRedo // Admin requested provider to redo the work
+}
+
+model Services {
+  id                      String    @id @default(uuid()) @db.Uuid
+  provider_id             String    @db.Uuid
+  admin_approved_id       String?   @db.Uuid
+  academic_category_id    Int
+  academic_subcategory_id Int?
+  title                   String
+  description             String
+  buyer_instructions      String?
+  price                   Float     @default(0)
+  delivery_time_days      Int
+  skills                  String[]
+  rating                  Float?    @default(0.0)
+  ratings_count           Int       @default(0)
+  created_at              DateTime  @default(now()) @db.Timestamptz
+  updated_at              DateTime  @default(now()) @db.Timestamptz
+  approved_at             DateTime? @db.Timestamptz
+
+  is_active Boolean @default(true)
+
+  owner_frozen Boolean @default(false) // frozen by owner
+  admin_frozen Boolean @default(false) // frozen by admin
+
+  provider            AcademicUsers         @relation("ProviderServices", fields: [provider_id], references: [user_id], onDelete: Cascade)
+  admin_approved      Admins?               @relation("AdminApprovedServices", fields: [admin_approved_id], references: [user_id])
+  academicSubcategory AcademicSubcategorys? @relation(fields: [academic_subcategory_id], references: [id])
+  category            AcademicCategorys     @relation(fields: [academic_category_id], references: [id])
+  attachments         ServiceAttachments[]
+  ratings             Ratings[]
+  purchases           ServicePurchases[]
+
+  @@index([provider_id])
+  @@index([admin_approved_id])
+  @@index([academic_subcategory_id])
+  @@index([academic_category_id])
+  @@index([price])
+  @@index([is_active])
+  @@index([owner_frozen])
+  @@index([admin_frozen])
+}
+
+model ServiceAttachments {
+  id          String   @id @default(uuid()) @db.Uuid
+  service_id  String   @db.Uuid
+  file_url    String
+  file_name   String
+  file_type   FileType
+  uploaded_at DateTime @default(now()) @db.Timestamptz
+
+  service Services @relation(fields: [service_id], references: [id], onDelete: Cascade)
+}
+
+model ServicePurchases {
+  id         String                @id @default(uuid()) @db.Uuid
+  service_id String                @db.Uuid
+  buyer_id   String                @db.Uuid
+  status     ServicePurchaseStatus @default(pending)
+  created_at DateTime              @default(now()) @db.Timestamptz
+  
+  service      Services                      @relation(fields: [service_id], references: [id], onDelete: Cascade)
+  buyer        AcademicUsers                 @relation("BuyerPurchases", fields: [buyer_id], references: [user_id])
+  deliverables ServicePurchaseDeliverables[]
+  disputes     Disputes[]
+  timeline     PurchaseTimeline[]
+  transaction  Transactions[]
+  chat         Chats?
+
+  @@index([service_id])
+  @@index([buyer_id])
+}
+
+model PurchaseTimeline {
+  id                  String                @id @default(uuid()) @db.Uuid
+  service_purchase_id String                @db.Uuid
+  user_id             String                @db.Uuid
+  role                ServicePurchaseRole
+  action              ServicePurchaseAction
+  created_at          DateTime              @default(now()) @db.Timestamptz
+
+  
+  servicePurchase ServicePurchases @relation(fields: [service_purchase_id], references: [id], onDelete: Cascade)
+  user            Users            @relation(fields: [user_id], references: [id])
+
+  @@index([service_purchase_id])
+}
+
+model ServicePurchaseDeliverables {
+  id            String   @id @default(uuid()) @db.Uuid
+  purchase_id   String   @db.Uuid
+  message       String?
+  buyer_comment String?
+  delivered_at  DateTime @default(now()) @db.Timestamptz
+
+  is_accepted Boolean   @default(false)
+  decision_at DateTime? @db.Timestamptz
+
+  purchase    ServicePurchases             @relation(fields: [purchase_id], references: [id], onDelete: Cascade)
+  attachments ServicePurchaseAttachments[]
+
+  @@index([purchase_id])
+}
+
+model ServicePurchaseAttachments {
+  id             String   @id @default(uuid()) @db.Uuid
+  deliverable_id String   @db.Uuid
+  file_url       String
+  file_name      String
+  file_type      FileType
+  uploaded_at    DateTime @default(now()) @db.Timestamptz
+
+  deliverable ServicePurchaseDeliverables @relation(fields: [deliverable_id], references: [id], onDelete: Cascade)
+
+  @@index([deliverable_id])
+}
+// ========== END Services MODELS ==========
+
+// ========== START CustomRequests MODELS ==========
+enum RequestImplementationAction {
+  request_created // owner submits the custom request
+  offer_accepted // owner accepts the offer
+  submit // provider delivers work
+  dispute_provider // Provider initiates a dispute
+  dispute_owner // Owner initiates a dispute
+  owner_rejected // owner rejects submission
+  complete // owner accepts submission
+
+  AdminRefundBuyer
+  AdminPayProvider
+  AdminSplitPayment
+  AdminChargeBoth
+  AdminAskRedo
+}
+
+enum RequestStatus {
+  open // Request is open and accepting offers
+  in_progress // Provider is working on the deliverables
+  submitted // Provider submitted the deliverables
+  disputed_by_provider // Dispute initiated by provider
+  disputed_by_owner // Dispute initiated by owner
+  owner_rejected // Owner rejected the deliverables
+  completed // request completed and closed
+}
+
+enum RequestImplementationRole {
+  owner
+  provider
+  admin
+}
+
+model CustomRequests {
+  id                      String        @id @default(uuid()) @db.Uuid
+  requester_id            String        @db.Uuid
+  accepted_offer_id       String?       @unique @db.Uuid
+  academic_category_id    Int
+  academic_subcategory_id Int?
+  title                   String
+  description             String
+  budget                  Float
+  expected_delivery_days  Int
+  skills                  String[]
+  status                  RequestStatus @default(open)
+  rating_id               String?       @unique @db.Uuid
+  created_at              DateTime      @default(now()) @db.Timestamptz
+  updated_at              DateTime      @default(now()) @db.Timestamptz
+
+  accepted_offer        CustomRequestOffers?                @relation("AcceptedOffer", fields: [accepted_offer_id], references: [id])
+  offers                CustomRequestOffers[]               @relation("RequestOffers")
+  requester             AcademicUsers                       @relation("RequesterRequests", fields: [requester_id], references: [user_id])
+  category              AcademicCategorys                   @relation(fields: [academic_category_id], references: [id])
+  subcategory           AcademicSubcategorys?               @relation(fields: [academic_subcategory_id], references: [id])
+  attachments           CustomRequestAttachments[]
+  chat                  Chats?
+  rating                Ratings?                            @relation("RequestRating", fields: [rating_id], references: [id])
+  dispute               Disputes?
+  transactions          Transactions[]
+  deliverables          RequestImplementationDeliverables[]
+  CustomRequestTimeline CustomRequestTimeline[]
+
+  @@index([requester_id])
+  @@index([accepted_offer_id])
+  @@index([academic_category_id])
+  @@index([academic_subcategory_id])
+  @@index([status])
+  @@index([expected_delivery_days])
+}
+
+model CustomRequestTimeline {
+  id         String                      @id @default(uuid()) @db.Uuid
+  request_id String                      @db.Uuid
+  actor_id   String                      @db.Uuid
+  actor_role RequestImplementationRole
+  action     RequestImplementationAction
+  created_at DateTime                    @default(now()) @db.Timestamptz
+
+  request CustomRequests @relation(fields: [request_id], references: [id], onDelete: Cascade)
+
+  @@index([request_id])
+  @@index([request_id, action])
+}
+
+model RequestImplementationDeliverables {
+  id                String  @id @default(uuid()) @db.Uuid
+  custom_request_id String  @db.Uuid
+  message           String?
+  requester_comment String?
+
+  delivered_at DateTime @default(now()) @db.Timestamptz
+
+  is_accepted Boolean   @default(false)
+  decision_at DateTime? @db.Timestamptz
+
+  request     CustomRequests                  @relation(fields: [custom_request_id], references: [id], onDelete: Cascade)
+  attachments RequestDeliverableAttachments[]
+
+  @@index([custom_request_id])
+  @@index([delivered_at])
+  @@index([is_accepted])
+}
+
+model RequestDeliverableAttachments {
+  id             String   @id @default(uuid()) @db.Uuid
+  deliverable_id String   @db.Uuid
+  file_url       String
+  file_name      String
+  file_type      String
+  created_at     DateTime @default(now()) @db.Timestamptz
+
+  deliverable RequestImplementationDeliverables @relation(fields: [deliverable_id], references: [id], onDelete: Cascade)
+
+  @@index([deliverable_id])
+}
+
+model CustomRequestAttachments {
+  id                String   @id @default(uuid()) @db.Uuid
+  custom_request_id String   @db.Uuid
+  file_url          String
+  file_name         String
+  file_type         FileType
+  uploaded_at       DateTime @default(now()) @db.Timestamptz
+
+  customRequest CustomRequests @relation(fields: [custom_request_id], references: [id], onDelete: Cascade)
+}
+
+model CustomRequestOffers {
+  id                String   @id @default(uuid()) @db.Uuid
+  custom_request_id String   @db.Uuid
+  provider_id       String   @db.Uuid
+  price             Float
+  delivery_days     Int
+  message           String
+  created_at        DateTime @default(now()) @db.Timestamptz
+  updated_at        DateTime @default(now()) @db.Timestamptz
+
+  request           CustomRequests  @relation("RequestOffers", fields: [custom_request_id], references: [id])
+  acceptedByRequest CustomRequests? @relation("AcceptedOffer")
+
+  provider    AcademicUsers       @relation(fields: [provider_id], references: [user_id])
+  attachments OffersAttachments[] @relation("OfferAttachment")
+
+  @@unique([custom_request_id, provider_id]) // Enforce only one offer per provider/request
+  @@index([provider_id])
+}
+
+model OffersAttachments {
+  id         String   @id @default(uuid()) @db.Uuid
+  offer_id   String   @db.Uuid
+  file_url   String
+  file_name  String
+  file_type  FileType
+  created_at DateTime @default(now()) @db.Timestamptz
+
+  offer CustomRequestOffers @relation("OfferAttachment", fields: [offer_id], references: [id])
+}
+// ========== END CustomRequests MODELS ==========
+
+// ========== START Chats MODELS ==========
+model Chats {
+  id                String   @id @default(uuid()) @db.Uuid
+  service_purchase_id        String?  @unique @db.Uuid
+  custom_request_id String?  @unique @db.Uuid
+  created_at        DateTime @default(now()) @db.Timestamptz
+  updated_at        DateTime @default(now()) @db.Timestamptz
+  
+  service       ServicePurchases?       @relation(fields: [service_purchase_id], references: [id], onDelete: Cascade)
+  customRequest CustomRequests? @relation(fields: [custom_request_id], references: [id], onDelete: Cascade)
+  messages      Messages[]
+  
+  @@index([service_purchase_id])
+  @@index([custom_request_id])
+}
+
+model Messages {
+  id         String   @id @default(uuid()) @db.Uuid
+  chat_id    String   @db.Uuid
+  sender_id  String   @db.Uuid
+  content    String?
+  created_at DateTime @default(now()) @db.Timestamptz
+  
+  chat        Chats                @relation(fields: [chat_id], references: [id], onDelete: Cascade)
+  sender      Users                @relation(fields: [sender_id], references: [id])
+  attachments MessageAttachments[]
+  
+  @@index([chat_id])
+  @@index([sender_id])
+  @@index([created_at])
+}
+
+model MessageAttachments {
+  id          String   @id @default(uuid()) @db.Uuid
+  message_id  String   @db.Uuid
+  file_url    String
+  file_name   String
+  uploaded_at DateTime @default(now()) @db.Timestamptz
+  
+  message Messages @relation(fields: [message_id], references: [id], onDelete: Cascade)
+  
+  @@index([message_id])
+}
+// ========== END Chats MODELS ==========
+
+// ========== START Ratings MODELS ==========
+model Ratings {
+  id                String   @id @default(uuid()) @db.Uuid
+  rater_id          String   @db.Uuid
+  service_id        String?  @db.Uuid
+  custom_request_id String?  @unique @db.Uuid
+  rating            Int
+  comment           String?
+  created_at        DateTime @default(now()) @db.Timestamptz
+
+  rater         AcademicUsers   @relation("RatingsGiven", fields: [rater_id], references: [user_id])
+  service       Services?       @relation(fields: [service_id], references: [id])
+  customRequest CustomRequests? @relation(name: "RequestRating")
+
+  @@index([rater_id])
+  @@index([service_id])
+  @@index([custom_request_id])
+  @@index([rating])
+  @@index([created_at])
+}
+// ========== END Ratings MODELS ==========
+
+// ========== START Disputes MODELS ==========
+enum DisputeStatus {
+  open
+  under_review
+  resolved
+  rejected
+}
+
+model Disputes {
+  id                   String        @id @default(uuid()) @db.Uuid
+  custom_request_id    String?       @unique @db.Uuid
+  service_purchase_id  String?       @unique @db.Uuid
+  complainant_id       String        @db.Uuid
+  respondent_id        String        @db.Uuid
+  description          String
+  complainant_note     String? // Hint for admin from complainant
+  status               DisputeStatus @default(open)
+  resolved_by_admin_id String?       @db.Uuid
+  solution             String?
+  admin_decision_at    DateTime?     @db.Timestamptz
+  created_at           DateTime      @default(now()) @db.Timestamptz
+  updated_at           DateTime      @default(now()) @db.Timestamptz
+
+  resolvedByAdmin Admins?           @relation("AdminsToResolvedDisputes", fields: [resolved_by_admin_id], references: [user_id])
+  customRequest   CustomRequests?   @relation(fields: [custom_request_id], references: [id], onDelete: Cascade)
+  servicePurchase ServicePurchases? @relation(fields: [service_purchase_id], references: [id], onDelete: Cascade)
+  complainant     AcademicUsers     @relation("ComplainantDisputes", fields: [complainant_id], references: [user_id])
+  respondent      AcademicUsers     @relation("RespondentDisputes", fields: [respondent_id], references: [user_id])
+  transactions    Transactions[]
+
+  
+  @@index([custom_request_id])
+  @@index([service_purchase_id])
+  @@index([complainant_id])
+  @@index([respondent_id])
+  @@index([status])
+  @@index([resolved_by_admin_id])
+}
+// ========== END Disputes MODELS ==========
+
+// ========== START Notifications MODELS ==========
+model Notifications {
+  id         String   @id @default(uuid()) @db.Uuid
+  user_id    String   @db.Uuid
+  title      String
+  message    String
+  is_read    Boolean  @default(false)
+  created_at DateTime @default(now()) @db.Timestamptz
+
+  user Users @relation(fields: [user_id], references: [id])
+  
+  @@index([user_id])
+  @@index([is_read])
+  @@index([created_at])
+}
+// ========== END Notifications MODELS ==========
+
+// ========== START Transactions MODELS ==========
+enum TransactionDirection {
+  credit
+  debit
+}
+
+enum TransactionReason {
+  deposit // user tops up wallet
+  withdrawal // user withdraws money
+  service_payment // user pays for a posted service (and freezes balance)
+  custom_request_payment // user pays for a custom service (and freezes balance)
+  fund_release // funds moved from buyer's frozen balance (not an actual transfer)
+  service_income // provider receives funds for completed service
+  custom_request_income // provider receives funds for completed custom request
+  platform_commission // system takes commission from provider
+  dispute_resolution // refund or penalty related to a dispute
+}
+
+model UserBalances {
+  user_id        String   @id @db.Uuid
+  balance        Float    @default(0)
+  frozen_balance Float    @default(0) // holds the money until task is completed
+  updated_at     DateTime @default(now()) @db.Timestamptz
+
+  user AcademicUsers @relation("AcademicUserBalance", fields: [user_id], references: [user_id])
+}
+
+model SystemBalance {
+  id            Int      @id @default(1)
+  total_balance Float    @default(0)
+  updated_at    DateTime @default(now()) @updatedAt
+}
+
+model Transactions {
+  id                  String               @id @default(uuid()) @db.Uuid
+  user_id             String?              @db.Uuid
+  admin_id            String?              @db.Uuid
+  amount              Float
+  direction           TransactionDirection // credit +amount | debit -amount
+  reason              TransactionReason
+  payment_method      String?
+  service_purchase_id String?              @db.Uuid
+  custom_request_id   String?              @db.Uuid
+  related_dispute_id  String?              @db.Uuid
+  description         String?
+  created_at          DateTime             @default(now()) @db.Timestamptz
+
+  user          AcademicUsers?    @relation(fields: [user_id], references: [user_id], onDelete: Cascade)
+  admin         Admins?           @relation(fields: [admin_id], references: [user_id])
+  service       ServicePurchases? @relation(fields: [service_purchase_id], references: [id])
+  customRequest CustomRequests?   @relation(fields: [custom_request_id], references: [id])
+  dispute       Disputes?         @relation(fields: [related_dispute_id], references: [id])
+
+  @@index([user_id])
+  @@index([admin_id])
+  @@index([direction])
+  @@index([reason])
+  @@index([service_purchase_id])
+  @@index([custom_request_id])
+  @@index([related_dispute_id])
+  @@index([created_at])
+}
+// ========== END Transactions MODELS ==========
