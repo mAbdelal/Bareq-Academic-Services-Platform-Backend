@@ -23,6 +23,8 @@ const createServicePurchase = async (req, res, next) => {
                 is_active: true,
                 owner_frozen: true,
                 admin_frozen: true,
+                price: true,
+                owner_id: true,
             },
         });
 
@@ -31,8 +33,15 @@ const createServicePurchase = async (req, res, next) => {
         if (service.owner_frozen) throw new BadRequestError('Service is currently frozen by the provider');
         if (service.admin_frozen) throw new BadRequestError('Service is currently frozen by admin');
 
-        // Step 2: Use a transaction to create both purchase and timeline log
-        const { purchase } = await prisma.$transaction(async (tx) => {
+        const price = service.price;
+
+        const balance = await prisma.userBalances.findUnique({ where: { user_id: buyer_id } });
+        if (!balance || balance.balance < price) {
+            throw new BadRequestError("Insufficient balance to purchase");
+        }
+
+        const purchase = await prisma.$transaction(async (tx) => {
+            // Create ServicePurchase
             const purchase = await tx.servicePurchases.create({
                 data: {
                     service_id,
@@ -43,21 +52,48 @@ const createServicePurchase = async (req, res, next) => {
 
             await tx.purchaseTimeline.create({
                 data: {
-                    purchase_id: purchase.id,
-                    actor_id: buyer_id,
-                    actor_role: 'buyer',
+                    service_purchase_id: purchase.id,
+                    user_id: buyer_id,
+                    role: 'buyer',
                     action: 'purchase',
                 },
             });
 
-            return { purchase };
+            // Find the active negotiation (PENDING) between buyer and provider
+            const negotiation = await tx.negotiations.findFirst({
+                where: {
+                    service_id,
+                    buyer_id,
+                    provider_id: service.provider_id,
+                    status: "pending",
+                },
+            });
+
+            if (negotiation) {
+                // Update negotiation status → agreed
+                await tx.negotiations.update({
+                    where: { id: negotiation.id },
+                    data: { status: "agreed" },
+                });
+
+                // Update the chat attached to this negotiation
+                if (negotiation.chat) {
+                    await tx.chats.update({
+                        where: { id: negotiation.chat.id },
+                        data: { service_purchase_id: purchase.id },
+                    });
+                }
+            }
+
+            return purchase;
         });
 
-        return success(res, { purchase }, 'Purchase created successfully');
+        return success(res, purchase, 'Purchase created successfully');
     } catch (err) {
         next(err);
     }
 };
+
 
 
 
@@ -81,6 +117,7 @@ const getMyPurchases = async (req, res, next) => {
                                         first_name_ar: true,
                                         last_name_ar: true,
                                         full_name_en: true,
+                                        avart:true
                                     }
                                 }
                             }
@@ -100,7 +137,8 @@ const getMyPurchases = async (req, res, next) => {
 const getPurchaseById = async (req, res, next) => {
     try {
         const { id } = req.params;
-        const buyer_id = req.user.id;
+        const user_id = req.user.id;
+
 
         const purchase = await prisma.servicePurchases.findUnique({
             where: { id },
@@ -111,6 +149,10 @@ const getPurchaseById = async (req, res, next) => {
                         title: true,
                         description: true,
                         rating: true,
+                        provider_id: true,
+                        buyer_instructions: true,
+                        delivery_time_days: true,
+                        ratings_count: true,
                         provider: {
                             select: {
                                 user: {
@@ -118,27 +160,35 @@ const getPurchaseById = async (req, res, next) => {
                                         first_name_ar: true,
                                         last_name_ar: true,
                                         full_name_en: true,
+                                        avatar: true
                                     }
                                 }
                             }
                         }
                     }
                 },
-                deliverables: true,
+                deliverables: {
+                    include: {
+                        attachments: true
+                    }
+                },
                 timeline: true,
-                disputes: true,
+                dispute: {
+                    select: {
+                        id: true
+                    }
+                }
             },
         });
 
         if (!purchase) throw new NotFoundError('Purchase not found');
-        if (purchase.buyer_id !== buyer_id) throw new BadRequestError('Not authorized to access this purchase');
+        if (purchase.buyer_id !== user_id && purchase.service.provider_id !== user_id) throw new BadRequestError('Not authorized to access this purchase');
 
-        return success(res, { purchase });
+        return success(res, purchase);
     } catch (err) {
         next(err);
     }
 };
-
 
 
 const providerAcceptPurchase = async (req, res, next) => {
@@ -184,6 +234,51 @@ const providerAcceptPurchase = async (req, res, next) => {
                 throw new BadRequestError("Buyer has insufficient balance");
             }
 
+            // Check if purchase was created more than 2 days ago
+            const twoDaysAgo = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000);
+            if (purchase.created_at < twoDaysAgo) {
+                // Return funds to buyer if previously frozen
+                await tx.userBalances.update({
+                    where: { user_id: purchase.buyer_id },
+                    data: {
+                        balance: { increment: service.price },
+                        frozen_balance: { decrement: service.price },
+                        updated_at: new Date(),
+                    },
+                });
+
+                // Update purchase status to 'refused'
+                await tx.servicePurchases.update({
+                    where: { id: purchase_id },
+                    data: {
+                        status: "refused_due_to_timeout",
+                    },
+                });
+
+                await tx.purchaseTimeline.create({
+                    data: {
+                        service_purchase_id: purchase.id,
+                        user_id: provider_id,
+                        role: 'provider',
+                        action: 'ProviderRefusedDueToTimeout',
+                    },
+                });
+
+                await tx.transactions.create({
+                    data: {
+                        user_id: purchase.buyer_id,
+                        amount: service.price,
+                        direction: "debit",
+                        reason: "fund_release",
+                        payment_method: null,
+                        related_service_id: service.id,
+                        description: "fund release for service purchase due to timeout",
+                    },
+                });
+
+                throw new BadRequestError("تجاوزت مهلة اليومان للقبول اسأل المشتري للشراء مرة اخرى")
+            }
+
             // Freeze buyer's balance
             await tx.userBalances.update({
                 where: { user_id: purchase.buyer_id },
@@ -214,6 +309,15 @@ const providerAcceptPurchase = async (req, res, next) => {
                     status: "in_progress",
                 },
             });
+
+            await tx.purchaseTimeline.create({
+                data: {
+                    service_purchase_id: purchase.id,
+                    user_id: purchase.buyer_id,
+                    role: 'buyer',
+                    action: 'ProviderAccepted',
+                },
+            });
         });
 
         return success(res, {}, "Purchase accepted and buyer's funds frozen.");
@@ -222,6 +326,7 @@ const providerAcceptPurchase = async (req, res, next) => {
         next(err);
     }
 };
+
 
 const providerRejectPurchase = async (req, res, next) => {
     try {
@@ -249,10 +354,10 @@ const providerRejectPurchase = async (req, res, next) => {
 
             await tx.purchaseTimeline.create({
                 data: {
-                    purchase_id: id,
-                    actor_id: provider_id,
-                    actor_role: 'provider',
-                    action: 'Provider_reject',
+                    service_purchase_id: purchase.id,
+                    user_id: provider_id,
+                    role: 'provider',
+                    action: 'ProviderRefusedDueToTimeout',
                 },
             });
         });
@@ -263,7 +368,7 @@ const providerRejectPurchase = async (req, res, next) => {
     }
 };
 
-const submitDeliverables = async (req, res, next) => {
+const finalSubmission = async (req, res, next) => {
     try {
         const provider_id = req.user.id;
         const { id } = req.params;
@@ -289,12 +394,12 @@ const submitDeliverables = async (req, res, next) => {
 
             await tx.purchaseTimeline.create({
                 data: {
-                    purchase_id: id,
-                    actor_id: provider_id,
-                    actor_role: 'provider',
-                    action: 'submit',
+                    service_purchase_id: id,
+                    user_id: provider_id,
+                    role: 'provider',
+                    action: 'Submitted',
                 },
-            });
+            })
 
         });
 
@@ -307,7 +412,7 @@ const submitDeliverables = async (req, res, next) => {
 const buyerAcceptSubmission = async (req, res, next) => {
     try {
         const buyer_id = req.user.id;
-        const { id } = req.params; 
+        const { id } = req.params;
 
         const purchase = await prisma.servicePurchases.findUnique({
             where: { id },
@@ -346,12 +451,12 @@ const buyerAcceptSubmission = async (req, res, next) => {
             // 2. Add to timeline
             await tx.purchaseTimeline.create({
                 data: {
-                    purchase_id: id,
-                    actor_id: buyer_id,
-                    actor_role: 'buyer',
+                    service_purchase_id: id,
+                    user_id: buyer_id,
+                    role: 'buyer',
                     action: 'complete',
                 },
-            });
+            })
 
             // 3. Update balances
             await tx.userBalances.update({
@@ -439,14 +544,15 @@ const buyerRejectSubmission = async (req, res, next) => {
                 where: { id },
                 data: { status: 'in_progress' },
             }),
+
             prisma.purchaseTimeline.create({
                 data: {
-                    purchase_id: id,
-                    actor_id: buyer_id,
-                    actor_role: 'buyer',
+                    service_purchase_id: id,
+                    user_id: buyer_id,
+                    role: 'buyer',
                     action: 'buyer_reject',
                 },
-            }),
+            })
         ]);
 
         return success(res, {}, 'Submission rejected');
@@ -454,17 +560,16 @@ const buyerRejectSubmission = async (req, res, next) => {
         next(err);
     }
 };
-
 const buyerDispute = async (req, res, next) => {
     try {
         const schema = Joi.object({
             reason: Joi.string().min(10).required(),
             note: Joi.string().allow('', null),
+            id: Joi.string().uuid().required(),
         });
-        const { reason, note } = await schema.validateAsync(req.body);
+        const { reason, note, id: service_purchase_id } = await schema.validateAsync(req.body);
 
         const buyer_id = req.user.id;
-        const { id: service_purchase_id } = req.params;
 
         const purchase = await prisma.servicePurchases.findUnique({
             where: { id: service_purchase_id },
@@ -474,12 +579,11 @@ const buyerDispute = async (req, res, next) => {
         });
 
         if (!purchase) throw new NotFoundError('Service purchase not found');
-        if (purchase.buyer_id !== buyer_id) {
-            throw new UnauthorizedError('You are not the buyer for this purchase');
-        }
+        if (purchase.buyer_id !== buyer_id) throw new UnauthorizedError('You are not the buyer for this purchase');
 
+        let dispute;
         await prisma.$transaction(async (tx) => {
-            await createServicePurchaseDispute({
+            dispute = await createServicePurchaseDispute({
                 tx,
                 service_purchase_id,
                 complainant_id: buyer_id,
@@ -495,15 +599,15 @@ const buyerDispute = async (req, res, next) => {
 
             await tx.purchaseTimeline.create({
                 data: {
-                    purchase_id: service_purchase_id,
-                    actor_id: buyer_id,
-                    actor_role: 'buyer',
-                    action: 'dispute_buyer',
+                    service_purchase_id,
+                    user_id: buyer_id,
+                    role: 'buyer',
+                    action: 'DisputeByBuyer',
                 },
             });
         });
 
-        return success(res, {}, 'Dispute raised by buyer');
+        return success(res, dispute, 'Dispute raised by buyer');
     } catch (err) {
         next(err);
     }
@@ -514,30 +618,25 @@ const providerDispute = async (req, res, next) => {
         const schema = Joi.object({
             reason: Joi.string().min(10).required(),
             note: Joi.string().allow('', null),
+            id: Joi.string().uuid().required(),
         });
 
-        const { reason, note } = await schema.validateAsync(req.body);
+        const { reason, note, id: service_purchase_id } = await schema.validateAsync(req.body);
         const provider_id = req.user.id;
-        const { id: service_purchase_id } = req.params;
-
 
         const purchase = await prisma.servicePurchases.findUnique({
             where: { id: service_purchase_id },
             include: {
-                service: {
-                    select: { provider_id: true },
-                },
+                service: { select: { provider_id: true } },
             },
         });
 
         if (!purchase) throw new NotFoundError('Service purchase not found');
+        if (purchase.service.provider_id !== provider_id) throw new UnauthorizedError('You are not the provider for this purchase');
 
-        if (purchase.service.provider_id !== provider_id) {
-            throw new UnauthorizedError('You are not the provider for this purchase');
-        }
-
+        let dispute;
         await prisma.$transaction(async (tx) => {
-            await createServicePurchaseDispute({
+            dispute = await createServicePurchaseDispute({
                 tx,
                 service_purchase_id,
                 complainant_id: provider_id,
@@ -553,19 +652,20 @@ const providerDispute = async (req, res, next) => {
 
             await tx.purchaseTimeline.create({
                 data: {
-                    purchase_id: service_purchase_id,
-                    actor_id: provider_id,
-                    actor_role: 'provider',
-                    action: 'dispute_provider',
+                    service_purchase_id,
+                    user_id: provider_id,
+                    role: 'provider',
+                    action: 'DisputeByProvider',
                 },
             });
         });
 
-        return success(res, {}, 'Dispute raised by provider');
+        return success(res, dispute, 'Dispute raised by provider');
     } catch (err) {
         next(err);
     }
 };
+
 
 const getAllPurchasesForAdmin = async (req, res, next) => {
     try {
@@ -742,7 +842,7 @@ module.exports = {
     getPurchaseById,
     providerRejectPurchase,
     providerAcceptPurchase,
-    submitDeliverables,
+    finalSubmission,
     buyerDispute,
     providerDispute,
     buyerRejectSubmission,

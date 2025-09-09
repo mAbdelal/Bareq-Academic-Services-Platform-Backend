@@ -9,15 +9,21 @@ const checkDatabase = require("./utils/dbHealth");
 const { success } = require("./utils/response");
 const { NODE_ENV } = require("./config/env");
 const indexRoutes = require("./routes/index");
+const path = require('path');
+const cookieParser = require('./middlewares/cookieParserMiddleware');
+const { setupSwagger } = require("./swagger");
 
 
 // Middlewares
+app.use(cookieParser);
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(helmet());
 app.use(morgan("dev"));
 app.use(rateLimit);
 app.use(cors);
+app.use('/api/v1/assets', express.static(path.join(__dirname, '..', "uploads")));
+setupSwagger(app);
 
 app.use("/api/v1", indexRoutes);
 

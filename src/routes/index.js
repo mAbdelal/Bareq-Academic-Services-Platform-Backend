@@ -18,7 +18,7 @@ const requestDeliverableRoutes = require('./requestDeliverable.routes');
 const chatRoutes = require('./chat.routes');
 const disputeRoutes = require('./dispute.routes');
 const notificationRoutes = require('./notification.routes');
-const transactionRoutes =require('./transaction.routes')
+const transactionRoutes = require('./transaction.routes')
 
 
 const router = express.Router();
@@ -39,12 +39,9 @@ router.use('/purchases', servicePurchaseRoutes);
 router.use('/purchase-deliverables', purchaseDeliverableRoutes);
 router.use('/requests', customRequestRoutes);
 router.use('/request-deliverables', requestDeliverableRoutes);
-router.use('/disputes', disputeRoutes); 
-router.use('/transactions', transactionRoutes); 
+router.use('/disputes', disputeRoutes);
+router.use('/transactions', transactionRoutes);
 router.use('/notifications', notificationRoutes);
-
-
-// TODO: check
 router.use('/chats', chatRoutes);
 
 

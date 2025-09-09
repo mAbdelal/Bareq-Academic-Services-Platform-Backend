@@ -4,7 +4,6 @@ const { BadRequestError, NotFoundError ,UnauthorizedError} = require('../utils/e
 const { success } = require('../utils/response');
 const validFileTypes = ['general'];
 
-
 const createDeliverableWithAttachments = async (req, res, next) => {
     try {
         const schema = Joi.object({
@@ -23,95 +22,105 @@ const createDeliverableWithAttachments = async (req, res, next) => {
             where: { id: request_id },
             include: { accepted_offer: true },
         });
-        if (!request) throw new NotFoundError('Request not found');
-        if (request.status !== 'in_progress') throw new BadRequestError('Request not in progress');
+        if (!request) throw new NotFoundError("Request not found");
+        if (request.status !== "in_progress")
+            throw new BadRequestError("Request not in progress");
 
         const acceptedOffer = await prisma.customRequestOffers.findUnique({
             where: { id: request.accepted_offer_id },
         });
         if (!acceptedOffer || acceptedOffer.provider_id !== provider_id)
-            throw new ForbiddenError('Not provider for this request');
+            throw new ForbiddenError("Not provider for this request");
 
         let parsedMeta = [];
         if (attachments_meta) {
-            if (typeof attachments_meta === 'string') {
+            if (typeof attachments_meta === "string") {
                 try {
                     parsedMeta = JSON.parse(attachments_meta);
                 } catch {
-                    throw new BadRequestError('Invalid attachments_meta JSON.');
+                    throw new BadRequestError("Invalid attachments_meta JSON.");
                 }
             } else {
                 parsedMeta = attachments_meta;
             }
 
             if (!Array.isArray(parsedMeta)) {
-                throw new BadRequestError('attachments_meta must be an array.');
+                throw new BadRequestError("attachments_meta must be an array.");
             }
 
             if (!req.files || req.files.length === 0) {
-                throw new BadRequestError('Files are missing for attachments.');
+                throw new BadRequestError("لا يوجد ملفات لتسليمها");
             }
 
             if (parsedMeta.length !== req.files.length) {
-                throw new BadRequestError('Number of metadata entries does not match number of files.');
+                throw new BadRequestError(
+                    "Number of metadata entries does not match number of files."
+                );
             }
 
             parsedMeta.forEach((meta, i) => {
                 if (!meta.filename || !meta.file_type) {
-                    throw new BadRequestError(`Missing filename or file_type in metadata at index ${i}.`);
+                    throw new BadRequestError(
+                        `Missing filename or file_type in metadata at index ${i}.`
+                    );
                 }
                 if (!validFileTypes.includes(meta.file_type)) {
-                    throw new BadRequestError(`Invalid file_type "${meta.file_type}" at index ${i}.`);
+                    throw new BadRequestError(
+                        `Invalid file_type "${meta.file_type}" at index ${i}.`
+                    );
                 }
 
-                const file = req.files.find(f => f.originalname === meta.filename);
+                const file = req.files.find((f) => f.originalname === meta.filename);
                 if (!file) {
-                    throw new BadRequestError(`File "${meta.filename}" not found in uploaded files.`);
+                    throw new BadRequestError(
+                        `File "${meta.filename}" not found in uploaded files.`
+                    );
                 }
             });
         }
 
-        const deliverable = await prisma.$transaction(async (tx) => {
+        const newDeliverable = await prisma.$transaction(async (tx) => {
             const createdDeliverable = await tx.requestImplementationDeliverables.create({
                 data: {
                     custom_request_id: request_id,
                     message,
-                    is_accepted: false,
-                    delivered_at: new Date()
-                }
+                    delivered_at: new Date(),
+                    is_accepted:undefined,
+                    decision_at:undefined,
+                },
             });
 
             if (parsedMeta.length > 0) {
                 const attachmentsData = parsedMeta.map((meta) => {
-                    const file = req.files.find(f => f.originalname === meta.filename);
+                    const file = req.files.find((f) => f.originalname === meta.filename);
                     return {
                         deliverable_id: createdDeliverable.id,
-                        file_url: file.filename,         
+                        file_url: file.filename,
                         file_name: file.originalname,
-                        file_type: meta.file_type
+                        file_type: meta.file_type,
                     };
                 });
 
                 await tx.requestDeliverableAttachments.createMany({
-                    data: attachmentsData
+                    data: attachmentsData,
                 });
             }
 
-            const fullDeliverable = await tx.requestImplementationDeliverables.findUnique({
+            // Fetch deliverable again with attachments included
+            return tx.requestImplementationDeliverables.findUnique({
                 where: { id: createdDeliverable.id },
                 include: {
-                    attachments: true
-                }
+                    attachments: true, // assumes relation name is "attachments"
+                },
             });
-
-            return fullDeliverable;
         });
 
-        return success(res, { deliverable }, 'Deliverable submitted successfully');
+        return success(res, { deliverable: newDeliverable }, "Deliverable submitted successfully");
     } catch (err) {
         next(err);
     }
 };
+
 
 const acceptDeliverable = async (req, res, next) => {
     try {
@@ -153,7 +162,7 @@ const rejectDeliverable = async (req, res, next) => {
     try {
         const schema = Joi.object({
             id: Joi.string().uuid().required(),
-            comment: Joi.string().optional(),
+            comment: Joi.string().allow('', null), 
         });
 
         const { id, comment } = await schema.validateAsync({
@@ -171,7 +180,7 @@ const rejectDeliverable = async (req, res, next) => {
         if (!deliverable) throw new NotFoundError('Deliverable not found');
         if (deliverable.request.requester_id !== owner_id) throw new UnauthorizedError('Not owner of request');
         if (deliverable.request.status !== 'in_progress') throw new BadRequestError('Request not in progress');
-        if (deliverable.is_accepted !== null) throw new BadRequestError('Deliverable has already been decided');
+        if (deliverable.is_accepted) throw new BadRequestError('Deliverable has already been decided');
         
 
         await prisma.requestImplementationDeliverables.update({

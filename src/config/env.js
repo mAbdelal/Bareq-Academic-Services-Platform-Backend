@@ -16,6 +16,7 @@ module.exports = {
     EMAIL_PASSWORD: process.env.EMAIL_PASSWORD,
     FRONTEND_URL: process.env.FRONTEND_URL,
     PLATFORM_COMMISSION_RATE: parseFloat(process.env.PLATFORM_COMMISSION_RATE),
-    DISPUTE_PENALTY_RATE: parseFloat(process.env.DISPUTE_PENALTY_RATE)
+    DISPUTE_PENALTY_RATE: parseFloat(process.env.DISPUTE_PENALTY_RATE),
+    CLIENT_URL: process.env.CLIENT_URL
 };
 

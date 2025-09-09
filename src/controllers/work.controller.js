@@ -134,7 +134,20 @@ const getWorkById = async (req, res, next) => {
                 attachments: true,
                 category: true,
                 subcategory: true,
-                user: true
+                user: {
+                    include:{
+                        user:{
+                            select:{
+                                username: true,
+                                first_name_ar:true,
+                                last_name_ar:true,
+                                full_name_en:true,
+                                avatar:true,
+                                is_active:true
+                            }
+                        }
+                    }
+                }
             }
         });
 
@@ -196,27 +209,21 @@ const createWork = async (req, res, next) => {
     }
 };
 
+
+
 const uploadAttachments = async (req, res, next) => {
     try {
         const { id } = req.params;
 
-        if (!id) {
-            throw new BadRequestError('Missing work_id parameter');
-        }
+        if (!id) throw new BadRequestError('Missing work_id parameter');
 
         const work = await prisma.works.findUnique({ where: { id } });
-        if (!work) {
-            throw new NotFoundError('Work not found');
-        }
-        if (work.user_id !== req.user.id) {
-            throw new ForbiddenError('Not authorized to upload attachments for this work');
-        }
+        if (!work) throw new NotFoundError('Work not found');
+        if (work.user_id !== req.user.id) throw new ForbiddenError('Not authorized to upload attachments for this work');
 
-        if (!req.files || req.files.length === 0) {
-            throw new BadRequestError('No files uploaded');
-        }
+        if (!req.files || req.files.length === 0) throw new BadRequestError('No files uploaded');
 
-        let attachments_meta = req.body.attachments_meta; 
+        let attachments_meta = req.body.attachments_meta;
 
         if (typeof attachments_meta === 'string') {
             try {
@@ -226,56 +233,47 @@ const uploadAttachments = async (req, res, next) => {
             }
         }
 
-        if (!Array.isArray(attachments_meta)) {
-            throw new BadRequestError('attachments_meta must be an array.');
+        if (!Array.isArray(attachments_meta)) throw new BadRequestError('attachments_meta must be an array.');
+        if (attachments_meta.length !== req.files.length) throw new BadRequestError('Number of attachments_meta items does not match number of uploaded files.');
+
+        // Check if new attachments contain more than one cover
+        const newCovers = attachments_meta.filter(meta => meta.file_type === 'cover');
+        if (newCovers.length > 1) {
+            throw new BadRequestError('You can only upload one cover at a time.');
         }
 
-        if (attachments_meta.length !== req.files.length) {
-            throw new BadRequestError('Number of attachments_meta items does not match number of uploaded files.');
-        }
-
-        // Check if new attachments contain more than one "cover"
-        const newCoversCount = attachments_meta.filter(meta => meta.file_type === 'cover').length;
-        if (newCoversCount > 1) {
-            throw new BadRequestError('Only one attachment can be of type "cover".');
-        }
-
-        // Check if work already has a cover attachment
         const existingCover = await prisma.workAttachments.findFirst({
-            where: {
-                work_id: id,
-                file_type: 'cover'
-            }
+            where: { work_id: id, file_type: 'cover' }
         });
-        if (existingCover && newCoversCount > 0) {
-            throw new BadRequestError('This work already has a cover attachment.');
-        }
 
-        const attachmentsData = [];
-
-        attachments_meta.forEach((meta, i) => {
+        const attachmentsData = attachments_meta.map(meta => {
             const { filename, file_type } = meta;
-
-            if (!validFileTypes.includes(file_type)) {
-                throw new BadRequestError(`Invalid file_type "${file_type}" at index ${i}.`);
-            }
-
             const file = req.files.find(f => f.originalname === filename);
-            if (!file) {
-                throw new BadRequestError(`File "${filename}" not found in uploaded files.`);
-            }
+            if (!file) throw new BadRequestError(`File "${filename}" not found in uploaded files.`);
+            if (!validFileTypes.includes(file_type)) throw new BadRequestError(`Invalid file_type "${file_type}"`);
 
-            attachmentsData.push({
+            return {
                 work_id: id,
                 file_url: file.filename,
                 file_name: file.originalname,
                 file_type
-            });
+            };
         });
 
-        await prisma.workAttachments.createMany({
-            data: attachmentsData
-        });
+        if (newCovers.length && existingCover) {
+            // Transaction: delete existing cover + insert new cover
+            await prisma.$transaction(async (tx) => {
+                await tx.workAttachments.delete({ where: { id: existingCover.id } });
+                await tx.workAttachments.createMany({
+                    data: attachmentsData
+                });
+            });
+        } else {
+            // Just insert attachments normally
+            await prisma.workAttachments.createMany({
+                data: attachmentsData
+            });
+        }
 
         return success(res, attachmentsData, 'Attachments uploaded successfully');
 
@@ -286,9 +284,11 @@ const uploadAttachments = async (req, res, next) => {
 
 
 
+
 const deleteAttachment = async (req, res, next) => {
     try {
         const { work_id, attachment_id } = req.params;
+        const user_id=req.user.id;
 
         if (!work_id) {
             throw new BadRequestError('Missing work_id parameter');
@@ -301,7 +301,7 @@ const deleteAttachment = async (req, res, next) => {
         if (!work) {
             throw new NotFoundError('Work not found');
         }
-        if (work.user_id !== req.user.id) {
+        if (work.user_id !== user_id) {
             throw new ForbiddenError('Not authorized to delete attachments for this work');
         }
 
@@ -408,9 +408,7 @@ const getUserWorksForPublic = async (req, res, next) => {
             orderBy: { created_at: 'desc' },
             include: {
                 attachments: true, 
-
                 category: {
-                    where: { is_active: true },
                     select: {
                         id: true,
                         name: true,
@@ -419,7 +417,6 @@ const getUserWorksForPublic = async (req, res, next) => {
                 },
 
                 subcategory: {
-                    where: { is_active: true },
                     select: {
                         id: true,
                         name: true,
@@ -428,11 +425,16 @@ const getUserWorksForPublic = async (req, res, next) => {
                 },
 
                 user: {
-                    select: {
-                        username: true,
-                        first_name_ar: true,
-                        last_name_ar: true,
-                        full_name_en: true,
+                    include:{
+                        user:{
+                            select:{
+                                username: true,
+                                full_name_en: true,
+                                first_name_ar: true,
+                                last_name_ar: true,
+                                avatar: true,
+                            }
+                        }
                     }
                 }
             }

@@ -4,18 +4,22 @@ const { UnauthorizedError, ForbiddenError } = require('../utils/errors');
 
 function authenticate(req, res, next) {
     try {
-        const authHeader = req.headers['authorization'];
-        if (!authHeader || !authHeader.startsWith('Bearer ')) {
+        const token = req.cookies?.accessToken;
+
+        if (!token) {
             throw new UnauthorizedError('No token provided');
         }
-        const token = authHeader.split(' ')[1];
+
         const decoded = verifyAccessToken(token);
+
         req.user = decoded;
+
         next();
     } catch (err) {
         next(new UnauthorizedError('Invalid or expired token'));
     }
 }
+
 
 const authorize = (...requiredPermissions) => {
     return async (req, res, next) => {

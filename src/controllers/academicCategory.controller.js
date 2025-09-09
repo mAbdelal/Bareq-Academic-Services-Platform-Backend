@@ -52,8 +52,8 @@ const getAllAcademicCategoriesForPublic = async (req, res, next) => {
                 created_at: 'desc'
             },
             select: {
+                id: true,
                 name: true,
-                description: true
             }
         });
 

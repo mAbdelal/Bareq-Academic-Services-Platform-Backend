@@ -1,9 +1,9 @@
 const Joi = require('joi');
-const prisma = require('../config/prisma'); 
+const prisma = require('../config/prisma');
 const { BadRequestError, NotFoundError, UnauthorizedError } = require('../utils/errors');
 const fs = require('fs').promises;
 const path = require('path');
-const {success} = require('../utils/response');
+const { success } = require('../utils/response');
 
 const validFileTypes = ['general'];
 
@@ -79,7 +79,7 @@ const submitDeliverable = async (req, res, next) => {
 
                 return {
                     deliverable_id: createdDeliverable.id,
-                    file_url: file.filename, 
+                    file_url: file.filename,
                     file_name: file.originalname,
                     file_type: meta.file_type
                 };
@@ -89,12 +89,11 @@ const submitDeliverable = async (req, res, next) => {
             createdAttachments = attachmentsData;
         });
 
+        createdDeliverable.attachments = createdAttachments;
+
         return success(
             res,
-            {
-                deliverable: createdDeliverable,
-                attachments: createdAttachments
-            },
+            createdDeliverable,
             'Deliverables submitted successfully'
         );
     } catch (err) {

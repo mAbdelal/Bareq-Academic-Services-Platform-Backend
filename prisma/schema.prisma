@@ -15,6 +15,7 @@ enum FileType {
   gallery_video
   cover
 }
+
 // ========== MODELS ==========
 
 // ========== START COMMON MODELS ==========
@@ -40,6 +41,7 @@ model Skills {
 
   @@index([name])
 }
+
 // ========== END COMMON MODELS ==========
 
 // ========== START USER TYPES MODELS ==========
@@ -77,6 +79,8 @@ model Users {
   notifications     Notifications[]
   messages          Messages[]
   purchaseTimelines PurchaseTimeline[]
+  firstPartChats    Chats[]            @relation("firstPartChats")
+  secondPartChats   Chats[]            @relation("secondPartChats")
 
   @@index([username])
   @@index([email])
@@ -92,7 +96,7 @@ model Admins {
   user             Users          @relation(fields: [user_id], references: [id], onDelete: Cascade)
   role             Roles          @relation(fields: [role_id], references: [id])
   transactions     Transactions[]
-  approvedServices Services[]     @relation("AdminApprovedServices")
+  approvedServices Services[]     @relation("AdminDecidedServices")
   resolvedDisputes Disputes[]     @relation("AdminsToResolvedDisputes")
 }
 
@@ -107,6 +111,7 @@ model AcademicUsers {
   study_end_year        Int?
   job_title             String?
   skills                String[]
+  about                 String?
   rating                Float?          @default(0.0)
   ratings_count         Int             @default(0)
   created_at            DateTime        @default(now()) @db.Timestamptz
@@ -123,11 +128,14 @@ model AcademicUsers {
   purchases               ServicePurchases[]    @relation("BuyerPurchases")
   CustomRequestOffers     CustomRequestOffers[]
   works                   Works[]               @relation("AcademicUserWorks")
+  buyerNegotiations       Negotiations[]        @relation("buyerNegotiations")
+  providerNegotiations    Negotiations[]        @relation("providerNegotiations")
 
   @@index([major])
   @@index([job_title])
   @@index([rating])
 }
+
 // ========== END USER TYPES MODELS ==========
 
 // ========== START ROLES PERMISSIONS MODELS ==========
@@ -241,6 +249,7 @@ model WorkAttachments {
 
   work Works @relation(fields: [work_id], references: [id], onDelete: Cascade)
 }
+
 // ========== END Works MODELS ==========
 
 // ========== START Services MODELS ==========
@@ -253,6 +262,7 @@ enum ServicePurchaseRole {
 enum ServicePurchaseStatus {
   pending // Purchase made, waiting for provider acceptance
   provider_rejected // provider rejected the purchase
+  refused_due_to_timeout
   in_progress // Provider is working on the submission
   submitted // Provider submitted the submission
   disputed_by_provider // Dispute initiated by provider
@@ -264,6 +274,7 @@ enum ServicePurchaseAction {
   Purchase // Initial purchase by buyer
   ProviderAccepted // Provider accepted the purchase
   ProviderRejected // Provider rejected the purchase
+  ProviderRefusedDueToTimeout
   Submitted // Provider submitted the service
   DisputeByProvider // Provider initiated a dispute
   DisputeByBuyer // Buyer initiated a dispute
@@ -277,46 +288,59 @@ enum ServicePurchaseAction {
   AdminAskRedo // Admin requested provider to redo the work
 }
 
+enum AdminApprovalStatus {
+  pending
+  approved
+  disapproved
+}
+
 model Services {
   id                      String    @id @default(uuid()) @db.Uuid
   provider_id             String    @db.Uuid
-  admin_approved_id       String?   @db.Uuid
+  admin_decided_id        String?   @db.Uuid
   academic_category_id    Int
   academic_subcategory_id Int?
   title                   String
   description             String
   buyer_instructions      String?
   price                   Float     @default(0)
-  delivery_time_days      Int
+  delivery_time_days      Int?      @default(0)
   skills                  String[]
   rating                  Float?    @default(0.0)
   ratings_count           Int       @default(0)
   created_at              DateTime  @default(now()) @db.Timestamptz
   updated_at              DateTime  @default(now()) @db.Timestamptz
-  approved_at             DateTime? @db.Timestamptz
 
   is_active Boolean @default(true)
 
-  owner_frozen Boolean @default(false) // frozen by owner
-  admin_frozen Boolean @default(false) // frozen by admin
+  owner_frozen Boolean @default(false)
+  admin_frozen Boolean @default(false)
+
+  admin_approval_status    AdminApprovalStatus @default(pending)
+  admin_decision_at        DateTime?
+  admin_disapproval_reason String?             
 
   provider            AcademicUsers         @relation("ProviderServices", fields: [provider_id], references: [user_id], onDelete: Cascade)
-  admin_approved      Admins?               @relation("AdminApprovedServices", fields: [admin_approved_id], references: [user_id])
+  admin_decided       Admins?               @relation("AdminDecidedServices", fields: [admin_decided_id], references: [user_id])
   academicSubcategory AcademicSubcategorys? @relation(fields: [academic_subcategory_id], references: [id])
   category            AcademicCategorys     @relation(fields: [academic_category_id], references: [id])
   attachments         ServiceAttachments[]
   ratings             Ratings[]
   purchases           ServicePurchases[]
+  negotiations        Negotiations[]
 
   @@index([provider_id])
-  @@index([admin_approved_id])
+  @@index([admin_decided_id])
   @@index([academic_subcategory_id])
   @@index([academic_category_id])
   @@index([price])
   @@index([is_active])
   @@index([owner_frozen])
   @@index([admin_frozen])
+  @@index([admin_approval_status])
 }
+
+
 
 model ServiceAttachments {
   id          String   @id @default(uuid()) @db.Uuid
@@ -335,11 +359,11 @@ model ServicePurchases {
   buyer_id   String                @db.Uuid
   status     ServicePurchaseStatus @default(pending)
   created_at DateTime              @default(now()) @db.Timestamptz
-  
+
   service      Services                      @relation(fields: [service_id], references: [id], onDelete: Cascade)
   buyer        AcademicUsers                 @relation("BuyerPurchases", fields: [buyer_id], references: [user_id])
   deliverables ServicePurchaseDeliverables[]
-  disputes     Disputes[]
+  dispute     Disputes?
   timeline     PurchaseTimeline[]
   transaction  Transactions[]
   chat         Chats?
@@ -356,7 +380,6 @@ model PurchaseTimeline {
   action              ServicePurchaseAction
   created_at          DateTime              @default(now()) @db.Timestamptz
 
-  
   servicePurchase ServicePurchases @relation(fields: [service_purchase_id], references: [id], onDelete: Cascade)
   user            Users            @relation(fields: [user_id], references: [id])
 
@@ -370,7 +393,7 @@ model ServicePurchaseDeliverables {
   buyer_comment String?
   delivered_at  DateTime @default(now()) @db.Timestamptz
 
-  is_accepted Boolean   @default(false)
+  is_accepted Boolean?
   decision_at DateTime? @db.Timestamptz
 
   purchase    ServicePurchases             @relation(fields: [purchase_id], references: [id], onDelete: Cascade)
@@ -391,6 +414,7 @@ model ServicePurchaseAttachments {
 
   @@index([deliverable_id])
 }
+
 // ========== END Services MODELS ==========
 
 // ========== START CustomRequests MODELS ==========
@@ -448,7 +472,6 @@ model CustomRequests {
   category              AcademicCategorys                   @relation(fields: [academic_category_id], references: [id])
   subcategory           AcademicSubcategorys?               @relation(fields: [academic_subcategory_id], references: [id])
   attachments           CustomRequestAttachments[]
-  chat                  Chats?
   rating                Ratings?                            @relation("RequestRating", fields: [rating_id], references: [id])
   dispute               Disputes?
   transactions          Transactions[]
@@ -485,7 +508,7 @@ model RequestImplementationDeliverables {
 
   delivered_at DateTime @default(now()) @db.Timestamptz
 
-  is_accepted Boolean   @default(false)
+  is_accepted Boolean?
   decision_at DateTime? @db.Timestamptz
 
   request     CustomRequests                  @relation(fields: [custom_request_id], references: [id], onDelete: Cascade)
@@ -535,6 +558,7 @@ model CustomRequestOffers {
 
   provider    AcademicUsers       @relation(fields: [provider_id], references: [user_id])
   attachments OffersAttachments[] @relation("OfferAttachment")
+  chat        Chats?
 
   @@unique([custom_request_id, provider_id]) // Enforce only one offer per provider/request
   @@index([provider_id])
@@ -550,23 +574,56 @@ model OffersAttachments {
 
   offer CustomRequestOffers @relation("OfferAttachment", fields: [offer_id], references: [id])
 }
+
 // ========== END CustomRequests MODELS ==========
 
 // ========== START Chats MODELS ==========
 model Chats {
-  id                String   @id @default(uuid()) @db.Uuid
-  service_purchase_id        String?  @unique @db.Uuid
-  custom_request_id String?  @unique @db.Uuid
-  created_at        DateTime @default(now()) @db.Timestamptz
-  updated_at        DateTime @default(now()) @db.Timestamptz
-  
-  service       ServicePurchases?       @relation(fields: [service_purchase_id], references: [id], onDelete: Cascade)
-  customRequest CustomRequests? @relation(fields: [custom_request_id], references: [id], onDelete: Cascade)
-  messages      Messages[]
-  
+  id                  String   @id @default(uuid()) @db.Uuid
+  negotiation_id      String?  @unique @db.Uuid
+  service_purchase_id String?  @unique @db.Uuid
+  offer_id            String?  @unique @db.Uuid
+  first_part_id       String   @db.Uuid
+  second_part_id      String   @db.Uuid
+  created_at          DateTime @default(now()) @db.Timestamptz
+  updated_at          DateTime @default(now()) @db.Timestamptz
+
+  // Relations
+  negotiation      Negotiations?        @relation(fields: [negotiation_id], references: [id], onDelete: Cascade)
+  service_purchase ServicePurchases?    @relation(fields: [service_purchase_id], references: [id], onDelete: Cascade)
+  offer            CustomRequestOffers? @relation(fields: [offer_id], references: [id], onDelete: Cascade)
+
+  first_part  Users      @relation("firstPartChats", fields: [first_part_id], references: [id])
+  second_part Users      @relation("secondPartChats", fields: [second_part_id], references: [id])
+  messages    Messages[]
+
+  @@index([negotiation_id])
   @@index([service_purchase_id])
-  @@index([custom_request_id])
+  @@index([offer_id])
+  @@index([first_part_id])
+  @@index([second_part_id])
 }
+
+enum NegotiationStatus {
+  pending
+  agreed
+}
+
+model Negotiations {
+  id          String            @id @default(uuid()) @db.Uuid
+  service_id  String            @db.Uuid
+  buyer_id    String            @db.Uuid
+  provider_id String            @db.Uuid
+  status      NegotiationStatus @default(pending)
+  created_at  DateTime          @default(now()) @db.Timestamptz
+  updated_at  DateTime          @default(now()) @db.Timestamptz
+
+  service  Services      @relation(fields: [service_id], references: [id], onDelete: Cascade)
+  buyer    AcademicUsers @relation("buyerNegotiations", fields: [buyer_id], references: [user_id])
+  provider AcademicUsers @relation("providerNegotiations", fields: [provider_id], references: [user_id])
+  chat     Chats?
+}
+
 
 model Messages {
   id         String   @id @default(uuid()) @db.Uuid
@@ -574,11 +631,11 @@ model Messages {
   sender_id  String   @db.Uuid
   content    String?
   created_at DateTime @default(now()) @db.Timestamptz
-  
+
   chat        Chats                @relation(fields: [chat_id], references: [id], onDelete: Cascade)
   sender      Users                @relation(fields: [sender_id], references: [id])
   attachments MessageAttachments[]
-  
+
   @@index([chat_id])
   @@index([sender_id])
   @@index([created_at])
@@ -590,11 +647,12 @@ model MessageAttachments {
   file_url    String
   file_name   String
   uploaded_at DateTime @default(now()) @db.Timestamptz
-  
+
   message Messages @relation(fields: [message_id], references: [id], onDelete: Cascade)
-  
+
   @@index([message_id])
 }
+
 // ========== END Chats MODELS ==========
 
 // ========== START Ratings MODELS ==========
@@ -617,6 +675,7 @@ model Ratings {
   @@index([rating])
   @@index([created_at])
 }
+
 // ========== END Ratings MODELS ==========
 
 // ========== START Disputes MODELS ==========
@@ -649,7 +708,6 @@ model Disputes {
   respondent      AcademicUsers     @relation("RespondentDisputes", fields: [respondent_id], references: [user_id])
   transactions    Transactions[]
 
-  
   @@index([custom_request_id])
   @@index([service_purchase_id])
   @@index([complainant_id])
@@ -657,6 +715,7 @@ model Disputes {
   @@index([status])
   @@index([resolved_by_admin_id])
 }
+
 // ========== END Disputes MODELS ==========
 
 // ========== START Notifications MODELS ==========
@@ -669,11 +728,12 @@ model Notifications {
   created_at DateTime @default(now()) @db.Timestamptz
 
   user Users @relation(fields: [user_id], references: [id])
-  
+
   @@index([user_id])
   @@index([is_read])
   @@index([created_at])
 }
+
 // ========== END Notifications MODELS ==========
 
 // ========== START Transactions MODELS ==========
@@ -738,4 +798,5 @@ model Transactions {
   @@index([related_dispute_id])
   @@index([created_at])
 }
+
 // ========== END Transactions MODELS ==========

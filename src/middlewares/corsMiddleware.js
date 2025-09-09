@@ -1,10 +1,10 @@
-const {NODE_ENV} = require('../config/env');
+const { NODE_ENV, CLIENT_URL } = require('../config/env');
 const cors = require("cors"); 
 
 
 const corsOptions = {
     origin: NODE_ENV === 'production'
-        ? process.env.CLIENT_URL
+        ? CLIENT_URL
         : 'http://localhost:3000',
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'],
     allowedHeaders: ['Content-Type', 'Authorization'],

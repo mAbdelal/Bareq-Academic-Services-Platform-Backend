@@ -5,12 +5,12 @@ const { success } = require('../utils/response');
 
 const getSkillSuggestions = async (req, res, next) => {
     try {
-        const { search = '' } = req.query;
+        const { query = '' } = req.query;
 
         const skills = await prisma.skills.findMany({
             where: {
                 name: {
-                    contains: search,
+                    contains: query,
                     mode: 'insensitive'
                 }
             },

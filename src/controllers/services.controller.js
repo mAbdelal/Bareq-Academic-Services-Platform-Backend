@@ -44,6 +44,187 @@ const createService = async (req, res, next) => {
     }
 };
 
+
+const uploadServiceAttachments = async (req, res, next) => {
+    try {
+        const { id } = req.params;
+
+        if (!id) {
+            throw new BadRequestError("Missing service_id parameter");
+        }
+
+        const service = await prisma.services.findUnique({ where: { id } });
+        if (!service) {
+            throw new NotFoundError("Service not found");
+        }
+
+        if (!req.files || req.files.length === 0) {
+            throw new BadRequestError("No files uploaded");
+        }
+
+        let attachments_meta = req.body.attachments_meta;
+
+        if (typeof attachments_meta === "string") {
+            try {
+                attachments_meta = JSON.parse(attachments_meta);
+            } catch {
+                throw new BadRequestError("Invalid attachments_meta JSON.");
+            }
+        }
+
+        if (!Array.isArray(attachments_meta)) {
+            throw new BadRequestError("attachments_meta must be an array.");
+        }
+
+        if (attachments_meta.length !== req.files.length) {
+            throw new BadRequestError(
+                "Number of attachments_meta items does not match number of uploaded files."
+            );
+        }
+
+        // Validate new covers
+        const newCovers = attachments_meta.filter(
+            (meta) => meta.file_type === "cover"
+        );
+        if (newCovers.length > 1) {
+            throw new BadRequestError(
+                'Only one attachment can be of type "cover".'
+            );
+        }
+
+        // Prepare attachments for insertion
+        const attachmentsData = attachments_meta.map((meta, i) => {
+            const { filename, file_type } = meta;
+
+            if (!validFileTypes.includes(file_type)) {
+                throw new BadRequestError(
+                    `Invalid file_type "${file_type}" at index ${i}.`
+                );
+            }
+
+            const file = req.files.find((f) => f.originalname === filename);
+            if (!file) {
+                throw new BadRequestError(
+                    `File "${filename}" not found in uploaded files.`
+                );
+            }
+
+            return {
+                service_id: id,
+                file_url: file.filename,
+                file_name: file.originalname,
+                file_type,
+            };
+        });
+
+        let deletedCover = null;
+
+        // Run DB actions in a transaction
+        await prisma.$transaction(async (tx) => {
+            // If new cover is uploaded and old one exists → replace
+            if (newCovers.length > 0) {
+                const existingCover = await tx.serviceAttachments.findFirst({
+                    where: {
+                        service_id: id,
+                        file_type: "cover",
+                    },
+                });
+
+                if (existingCover) {
+                    deletedCover = existingCover; // keep reference for FS cleanup
+                    await tx.serviceAttachments.delete({
+                        where: { id: existingCover.id },
+                    });
+                }
+            }
+
+            // Insert new attachments
+            await tx.serviceAttachments.createMany({
+                data: attachmentsData,
+            });
+        });
+
+        // Cleanup FS file if cover was replaced (outside transaction)
+        if (deletedCover) {
+            const filePath = path.join(
+                __dirname,
+                "..",
+                "uploads",
+                deletedCover.file_url
+            );
+            if (fs.existsSync(filePath)) {
+                fs.unlinkSync(filePath);
+            }
+        }
+
+        return success(res, attachmentsData, "Attachments uploaded successfully");
+    } catch (err) {
+        next(err);
+    }
+};
+
+
+const deleteServiceAttachment = async (req, res, next) => {
+    try {
+        const service_id = req.params.id;
+        const attachment_id = req.params.attachment_id;
+
+        if (!service_id) {
+            throw new BadRequestError("Missing service_id parameter");
+        }
+        if (!attachment_id) {
+            throw new BadRequestError("Missing attachment_id parameter");
+        }
+
+        const service = await prisma.services.findUnique({
+            where: { id: service_id },
+        });
+        if (!service) {
+            throw new NotFoundError("Service not found");
+        }
+
+        if (service.provider_id !== req.user.id) {
+            throw new ForbiddenError(
+                "Not authorized to delete attachments for this service"
+            );
+        }
+
+        // Validate attachment exists and belongs to this service
+        const attachment = await prisma.serviceAttachments.findUnique({
+            where: { id: attachment_id },
+        });
+        if (!attachment) {
+            throw new NotFoundError("Attachment not found");
+        }
+        if (attachment.service_id !== service_id) {
+            throw new ForbiddenError("Attachment does not belong to this service");
+        }
+
+        // Prevent deleting cover attachments
+        if (attachment.file_type === "cover") {
+            throw new BadRequestError("Cover attachments cannot be deleted directly");
+        }
+
+        // Delete physical file if exists
+        const filePath = path.join(__dirname, "..", "uploads", attachment.file_url);
+        if (fs.existsSync(filePath)) {
+            fs.unlinkSync(filePath);
+        }
+
+        await prisma.serviceAttachments.delete({ where: { id: attachment_id } });
+
+        return success(
+            res,
+            { deletedId: attachment_id },
+            "Attachment deleted successfully"
+        );
+    } catch (err) {
+        next(err);
+    }
+};
+
+
+
 const searchServicesForAdmin = async (req, res, next) => {
     try {
         const {
@@ -181,7 +362,11 @@ const getServiceByIdForPublic = async (req, res, next) => {
 
         if (!service) throw new NotFoundError('Service not found or not publicly available');
 
-        return success(res, service, 'Public service found');
+        const purchases_count = await prisma.servicePurchases.count({
+            where: { service_id: id }
+        });
+
+        return success(res, { ...service, purchases_count }, 'Public service found');
     } catch (err) {
         next(err);
     }
@@ -261,7 +446,7 @@ const updateService = async (req, res, next) => {
         });
 
         if (ongoingPurchases) {
-            throw new ForbiddenError('Cannot update service while there are ongoing or pending purchases');
+            throw new ForbiddenError('لا يمكن تحديث الخدمة بينما توجد عمليات شراء جارية أو معلقة');
         }
 
         const updateData = {};
@@ -410,11 +595,21 @@ const deactivateService = async (req, res, next) => {
         next(err);
     }
 };
-
-const approveService = async (req, res, next) => {
+const decideServiceApproval = async (req, res, next) => {
     try {
+        const schema = Joi.object({
+            action: Joi.string().valid("approved", "disapproved").required(),
+            reason: Joi.when("action", {
+                is: "disapproved",
+                then: Joi.string().min(3).required(),
+                otherwise: Joi.forbidden()
+            })
+        });
+
+        const { action, reason } = await schema.validateAsync(req.body);
+
         const { id } = req.params;
-        const { admin_id } = req.user.id;
+        const admin_id = req.user.id;
 
         const service = await prisma.services.findUnique({ where: { id } });
         if (!service) throw new NotFoundError('Service not found');
@@ -422,149 +617,19 @@ const approveService = async (req, res, next) => {
         const updated = await prisma.services.update({
             where: { id },
             data: {
-                admin_approved_id: admin_id,
-                approved_at: new Date()
+                admin_decided_id: admin_id,
+                admin_approval_status: action,
+                admin_decision_at: new Date(),
+                admin_disapproval_reason: action === "disapproved" ? reason : null
             }
         });
 
-        return success(res, updated, 'Service approved by admin');
+        return success(res, updated, `Service ${action} by admin`);
     } catch (err) {
         next(err);
     }
 };
 
-const uploadServiceAttachments = async (req, res, next) => {
-    try {
-        const { id } = req.params;
-
-        if (!id) {
-            throw new BadRequestError('Missing service_id parameter');
-        }
-
-        const service = await prisma.services.findUnique({ where: { id } });
-        if (!service) {
-            throw new NotFoundError('Service not found');
-        }
-
-        // Check if files are present
-        if (!req.files || req.files.length === 0) {
-            throw new BadRequestError('No files uploaded');
-        }
-
-        let attachments_meta = req.body.attachments_meta;
-
-        // Parse JSON if attachments_meta is a string
-        if (typeof attachments_meta === 'string') {
-            try {
-                attachments_meta = JSON.parse(attachments_meta);
-            } catch {
-                throw new BadRequestError('Invalid attachments_meta JSON.');
-            }
-        }
-
-        if (!Array.isArray(attachments_meta)) {
-            throw new BadRequestError('attachments_meta must be an array.');
-        }
-
-        if (attachments_meta.length !== req.files.length) {
-            throw new BadRequestError('Number of attachments_meta items does not match number of uploaded files.');
-        }
-
-        // Validate new covers
-        const newCoversCount = attachments_meta.filter(meta => meta.file_type === 'cover').length;
-        if (newCoversCount > 1) {
-            throw new BadRequestError('Only one attachment can be of type "cover".');
-        }
-
-        // Check if service already has a cover
-        const existingCover = await prisma.serviceAttachments.findFirst({
-            where: {
-                service_id: id,
-                file_type: 'cover'
-            }
-        });
-        if (existingCover && newCoversCount > 0) {
-            throw new BadRequestError('This service already has a cover attachment.');
-        }
-
-        // Prepare attachments for insertion
-        const attachmentsData = [];
-
-        attachments_meta.forEach((meta, i) => {
-            const { filename, file_type } = meta;
-
-            if (!validFileTypes.includes(file_type)) {
-                throw new BadRequestError(`Invalid file_type "${file_type}" at index ${i}.`);
-            }
-
-            const file = req.files.find(f => f.originalname === filename);
-            if (!file) {
-                throw new BadRequestError(`File "${filename}" not found in uploaded files.`);
-            }
-
-            attachmentsData.push({
-                service_id: id,
-                file_url: file.filename,
-                file_name: file.originalname,
-                file_type
-            });
-        });
-
-        await prisma.serviceAttachments.createMany({
-            data: attachmentsData
-        });
-
-        return success(res, attachmentsData, 'Attachments uploaded successfully');
-    } catch (err) {
-        next(err);
-    }
-};
-
-
-const deleteServiceAttachment = async (req, res, next) => {
-    try {
-        const service_id = req.params.id;
-        const attachment_id = req.params.attachment_id;
-
-        if (!service_id) {
-            throw new BadRequestError('Missing service_id parameter');
-        }
-        if (!attachment_id) {
-            throw new BadRequestError('Missing attachment_id parameter');
-        }
-
-        const service = await prisma.services.findUnique({ where: { id: service_id } });
-        if (!service) {
-            throw new NotFoundError('Service not found');
-        }
-
-
-        if (service.provider_id !== req.user.id) {
-            throw new ForbiddenError('Not authorized to delete attachments for this service');
-        }
-
-        // Validate attachment exists and belongs to this service
-        const attachment = await prisma.serviceAttachments.findUnique({ where: { id: attachment_id } });
-        if (!attachment) {
-            throw new NotFoundError('Attachment not found');
-        }
-        if (attachment.service_id !== service_id) {
-            throw new ForbiddenError('Attachment does not belong to this service');
-        }
-
-        // Delete physical file if exists 
-        const filePath = path.join(__dirname, '..', 'uploads', attachment.file_url);
-        if (fs.existsSync(filePath)) {
-            fs.unlinkSync(filePath);
-        }
-
-        await prisma.serviceAttachments.delete({ where: { id: attachment_id } });
-
-        return success(res, { deletedId: attachment_id }, 'Attachment deleted successfully');
-    } catch (err) {
-        next(err);
-    }
-};
 
 
 const getMyServices = async (req, res, next) => {
@@ -589,12 +654,14 @@ const getMyServices = async (req, res, next) => {
     }
 };
 
+
 const searchServicesForPublic = async (req, res, next) => {
     try {
         const {
             keyword,
             categoryId,
             subcategoryId,
+            skills,
             minPrice,
             maxPrice,
             page = 1,
@@ -607,13 +674,12 @@ const searchServicesForPublic = async (req, res, next) => {
             is_active: true,
             owner_frozen: false,
             admin_frozen: false,
-            NOT: {
-                admin_approved_id: null
-            }
+            admin_approval_status: "approved", 
         };
 
         if (categoryId) filters.academic_category_id = Number(categoryId);
         if (subcategoryId) filters.academic_subcategory_id = Number(subcategoryId);
+
         if (minPrice || maxPrice) {
             filters.price = {};
             if (minPrice) filters.price.gte = Number(minPrice);
@@ -625,6 +691,11 @@ const searchServicesForPublic = async (req, res, next) => {
                 { title: { contains: keyword, mode: 'insensitive' } },
                 { description: { contains: keyword, mode: 'insensitive' } }
             ];
+        }
+
+        if (skills) {
+            const skillsArray = Array.isArray(skills) ? skills : skills.split(",");
+            filters.skills = { hasSome: skillsArray };
         }
 
         const skip = (Number(page) - 1) * Number(limit);
@@ -652,6 +723,7 @@ const searchServicesForPublic = async (req, res, next) => {
                 delivery_time_days: true,
                 rating: true,
                 ratings_count: true,
+                skills: true,
                 provider: {
                     select: {
                         user: {
@@ -663,15 +735,12 @@ const searchServicesForPublic = async (req, res, next) => {
                         }
                     }
                 },
-                category: {
-                    select: { name: true }
-                },
-                academicSubcategory: {
-                    select: { name: true }
-                },
+                category: { select: { name: true } },
+                academicSubcategory: { select: { name: true } },
                 attachments: true
             }
         });
+        console.log(services)
 
         return success(res, {
             total: totalCount,
@@ -679,11 +748,12 @@ const searchServicesForPublic = async (req, res, next) => {
             limit: Number(limit),
             totalPages: Math.ceil(totalCount / limit),
             data: services
-        }, 'Search results');
+        });
     } catch (err) {
         next(err);
     }
 };
+
 
 const getServicesByUserIdForPublic = async (req, res, next) => {
     try {
@@ -695,9 +765,7 @@ const getServicesByUserIdForPublic = async (req, res, next) => {
                 is_active: true,
                 owner_frozen: false,
                 admin_frozen: false,
-                NOT: {
-                    admin_approved_id: null
-                }
+                admin_approval_status: "approved" 
             },
             include: {
                 provider: {
@@ -726,6 +794,7 @@ const getServicesByUserIdForPublic = async (req, res, next) => {
         next(err);
     }
 };
+
 
 const getServicesByUserIdForAdmin = async (req, res, next) => {
     try {
@@ -763,6 +832,230 @@ const getServicesByUserIdForAdmin = async (req, res, next) => {
         next(err);
     }
 };
+const getMyServiceById = async (req, res, next) => {
+    try {
+        const { id } = req.params;
+        const userId = req.user.id;
+
+        if (!id) throw new BadRequestError("Service ID is required");
+
+        const service = await prisma.services.findFirst({
+            where: {
+                id,
+                provider_id: userId,
+            },
+            select: {
+                id: true,
+                provider_id: true,
+                title: true,
+                description: true,
+                buyer_instructions: true,
+                price: true,
+                delivery_time_days: true,
+                skills: true,
+                rating: true,
+                ratings_count: true,
+                is_active: true,
+                owner_frozen: true,
+                admin_frozen: true,
+                created_at: true,
+                updated_at: true,
+
+                // Admin decision fields
+                admin_approval_status: true,
+                admin_decided_id: true,
+                admin_disapproval_reason: true,
+                admin_decision_at: true,
+
+                provider: {
+                    select: {
+                        user: {
+                            select: {
+                                first_name_ar: true,
+                                last_name_ar: true,
+                                full_name_en: true,
+                                avatar: true,
+                            },
+                        },
+                        job_title: true,
+                        rating: true,
+                        ratings_count: true,
+                    },
+                },
+                category: { select: { name: true } },
+                academicSubcategory: { select: { name: true } },
+                attachments: true,
+                purchases: {
+                    select: {
+                        id: true,
+                        buyer_id: true,
+                        status: true,
+                        created_at: true,
+                        buyer: {
+                            select: {
+                                user: {
+                                    select: {
+                                        first_name_ar: true,
+                                        last_name_ar: true,
+                                        avatar: true,
+                                    },
+                                },
+                            },
+                        },
+                    },
+                    orderBy: [
+                        { status: 'asc' },
+                        { created_at: 'desc' },
+                    ],
+                },
+            },
+        });
+
+        if (!service) throw new NotFoundError("Service not found or you are not the owner");
+
+        // Custom ordering: pending -> in_progress -> others
+        if (service.purchases?.length > 0) {
+            const statusOrder = ["pending", "in_progress"];
+            service.purchases.sort((a, b) => {
+                const aIndex = statusOrder.indexOf(a.status);
+                const bIndex = statusOrder.indexOf(b.status);
+
+                if (aIndex === -1 && bIndex === -1) return 0;
+                if (aIndex === -1) return 1;
+                if (bIndex === -1) return -1;
+                return aIndex - bIndex;
+            });
+        }
+
+        return success(res, service, "Service fetched successfully");
+    } catch (err) {
+        next(err);
+    }
+};
+
+
+
+const getSimilarServicesForPublic = async (req, res, next) => {
+    try {
+        const { id } = req.params;
+
+        const base = await prisma.services.findFirst({
+            where: {
+                id,
+                is_active: true,
+                owner_frozen: false,
+                admin_frozen: false
+            },
+            select: {
+                id: true,
+                provider_id: true,
+                academic_category_id: true,
+                academic_subcategory_id: true,
+                skills: true
+            }
+        });
+
+        if (!base) throw new NotFoundError('Service not found or not publicly available');
+
+        const whereClause = {
+            is_active: true,
+            owner_frozen: false,
+            admin_frozen: false,
+            id: { not: id },
+            OR: []
+        };
+
+        // Match by subcategory primarily, else by category
+        if (base.academic_subcategory_id) {
+            whereClause.OR.push({ academic_subcategory_id: base.academic_subcategory_id });
+        }
+        whereClause.OR.push({ academic_category_id: base.academic_category_id });
+
+        // Match overlapping skills if present
+        if (Array.isArray(base.skills) && base.skills.length > 0) {
+            whereClause.skills = { hasSome: base.skills };
+        }
+
+        const suggestions = await prisma.services.findMany({
+            where: whereClause,
+            orderBy: [
+                { rating: 'desc' },
+                { ratings_count: 'desc' },
+                { created_at: 'desc' }
+            ],
+            take: 5,
+            select: {
+                id: true,
+                title: true,
+                price: true,
+                rating: true,
+                ratings_count: true,
+                delivery_time_days: true,
+                academic_category_id: true,
+                academic_subcategory_id: true,
+                provider: {
+                    select: {
+                        user: {
+                            select: {
+                                first_name_ar: true,
+                                last_name_ar: true,
+                                full_name_en: true
+                            }
+                        },
+                        job_title: true
+                    }
+                },
+                category: { select: { name: true } },
+                academicSubcategory: { select: { name: true } },
+                attachments: true
+            }
+        });
+
+        return success(res, suggestions, 'Similar services');
+    } catch (err) {
+        next(err);
+    }
+};
+
+const getServiceRatings = async (req, res, next) => {
+    try {
+        const { id } = req.params;
+
+        if (!id) {
+            throw new NotFoundError("Service ID is required");
+        }
+
+        const ratings = await prisma.ratings.findMany({
+            where: { service_id: id },
+            orderBy: { created_at: "desc" },
+            select: {
+                id: true,
+                rating: true,
+                comment: true,
+                created_at: true,
+                rater: {
+                    select: {
+                        user: {
+                            select: {
+                                id: true,
+                                avatar: true,
+                                first_name_ar: true,
+                                last_name_ar: true,
+                                full_name_en: true
+                            }
+                        },
+                        rating: true,
+                        ratings_count: true
+                    }
+                }
+            }
+        });
+
+        return success(res, ratings, "Service ratings retrieved successfully");
+    } catch (err) {
+        next(err);
+    }
+};
 
 
 module.exports = {
@@ -776,11 +1069,14 @@ module.exports = {
     uploadServiceAttachments,
     activateService,
     deactivateService,
-    approveService,
+    decideServiceApproval,
     searchServicesForPublic,
     getServicesByUserIdForPublic,
     getServicesByUserIdForAdmin,
     searchServicesForAdmin,
     getServiceByIdForPublic,
-    getServiceByIdForAdmin
+    getServiceByIdForAdmin,
+    getSimilarServicesForPublic,
+    getServiceRatings,
+    getMyServiceById
 };

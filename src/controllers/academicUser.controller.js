@@ -297,6 +297,34 @@ const uploadIdentityDocument = async (req, res, next) => {
 };
 
 
+// const getSelfAcademicUserProfile = async (req, res, next) => {
+//     try {
+//         const userId = req.user.id;
+//         if (!userId) throw new BadRequestError('User not authenticated');
+
+//         const academic = await prisma.academicUsers.findUnique({
+//             where: { user_id: userId },
+//             include: {
+//                 user: {
+//                     select: {
+//                         username: true,
+//                         avatar: true,
+//                         first_name_ar: true,
+//                         last_name_ar: true,
+//                         full_name_en: true,
+//                     }
+//                 }
+//             }
+//         });
+
+//         if (!academic) throw new NotFoundError('Academic user profile not found');
+
+//         return success(res, academic, 'Academic user profile fetched');
+//     } catch (err) {
+//         next(err);
+//     }
+// };
+
 const getSelfAcademicUserProfile = async (req, res, next) => {
     try {
         const userId = req.user.id;
@@ -308,22 +336,92 @@ const getSelfAcademicUserProfile = async (req, res, next) => {
                 user: {
                     select: {
                         username: true,
-                        email: true,
+                        avatar: true,
                         first_name_ar: true,
                         last_name_ar: true,
                         full_name_en: true,
                     }
-                }
+                },
+                balance: true,
             }
         });
 
         if (!academic) throw new NotFoundError('Academic user profile not found');
 
-        return success(res, academic, 'Academic user profile fetched');
+        const offers = await prisma.customRequestOffers.findMany({
+            where: { provider_id: userId },
+            include: { request: true }
+        });
+
+        let offersInProgress = 0;
+        let offersDone = 0;
+
+        offers.forEach(offer => {
+            if (offer.acceptedByRequest) {
+                offersDone++;
+            } else {
+                if (offer.request.status === 'open' || offer.request.status === 'in_progress') {
+                    offersInProgress++;
+                }
+            }
+        });
+
+        const buyerPurchaseCounts = await prisma.servicePurchases.groupBy({
+            by: ['status'],
+            where: { buyer_id: userId },
+            _count: { id: true }
+        });
+
+        let buyerInProgress = 0;
+        let buyerCompleted = 0;
+
+        buyerPurchaseCounts.forEach(p => {
+            if (p.status === 'in_progress') buyerInProgress = p._count.id;
+            if (p.status === 'completed') buyerCompleted = p._count.id;
+        });
+
+        // Count purchases where the user is the provider
+        const providerPurchaseCounts = await prisma.servicePurchases.groupBy({
+            by: ['status'],
+            where: { service: { provider_id: userId } },
+            _count: { id: true }
+        });
+
+        let providerInProgress = 0;
+        let providerCompleted = 0;
+
+        providerPurchaseCounts.forEach(p => {
+            if (p.status === 'in_progress') providerInProgress = p._count.id;
+            if (p.status === 'completed') providerCompleted = p._count.id;
+        });
+
+        // Build response object
+        const result = {
+            ...academic,
+            balance: academic.balance?.balance || 0,
+            frozen_balance: academic.balance?.frozen_balance || 0,
+            purchases_summary: {
+                as_buyer: {
+                    in_progress: buyerInProgress,
+                    completed: buyerCompleted
+                },
+                as_provider: {
+                    in_progress: providerInProgress,
+                    completed: providerCompleted
+                }
+            },
+            offers_summary: {
+                in_progress: offersInProgress,
+                done: offersDone
+            }
+        };
+
+        return success(res, result, 'Academic user profile fetched with purchases and offers summary');
     } catch (err) {
         next(err);
     }
 };
+
 
 const getAllAcademicUsersForPublic = async (req, res, next) => {
     try {
@@ -353,9 +451,74 @@ const getAllAcademicUsersForPublic = async (req, res, next) => {
 };
 
 
+const getUserRatingPublic = async (req, res, next) => {
+    try {
+        const { id } = req.params;
+
+        // Check if user exists
+        const user = await prisma.users.findUnique({
+            where: { id: id },
+            select: { academicUser: true },
+        });
+
+        if (!user || !user.academicUser) {
+            throw new NotFoundError('User not found or not an academic user');
+        }
+
+        const ratings = await prisma.ratings.findMany({
+            where: {
+                OR: [
+                    { service: { provider_id: user.academicUser.user_id } },
+                    { customRequest: { requester_id: user.academicUser.user_id } },
+                ],
+            },
+            orderBy: { created_at: 'desc' },
+            select: {
+                id: true,
+                rating: true,
+                comment: true,
+                created_at: true,
+                rater: {
+                    select: {
+                        user: {
+                            select: {
+                                avatar: true,
+                                full_name_en: true,
+                                first_name_ar: true,
+                                last_name_ar: true,
+                            },
+                        },
+                    },
+                },
+                service: {
+                    select: { title: true },
+                },
+                customRequest: {
+                    select: { title: true },
+                },
+            },
+        });
+
+        const formattedRatings = ratings.map((r) => ({
+            id: r.id,
+            rating: r.rating,
+            comment: r.comment,
+            created_at: r.created_at,
+            user: r.rater.user,
+            service_title: r.service?.title || null,
+            custom_request_title: r.customRequest?.title || null,
+        }));
+
+        return success(res, formattedRatings, 'User ratings fetched successfully');
+    } catch (error) {
+        next(error);
+    }
+};
+
+
 const getProfileForPublic = async (req, res, next) => {
     try {
-        const { id } = req.params; 
+        const { id } = req.params;
 
         const academicUser = await prisma.academicUsers.findUnique({
             where: { user_id: id },
@@ -365,8 +528,9 @@ const getProfileForPublic = async (req, res, next) => {
                         username: true,
                         full_name_en: true,
                         first_name_ar: true,
+                        avatar: true,
                         last_name_ar: true,
-                        is_active: true,
+                        is_active: true
                     }
                 },
             },
@@ -415,6 +579,82 @@ const getUserBalanceByAdmin = async (req, res, next) => {
     }
 };
 
+const searchAcademicUsersPublic = async (req, res, next) => {
+    try {
+        const {
+            job_title,
+            skills,
+            min_rating,
+            max_rating,
+            page = 1,
+            limit = 10
+        } = req.query;
+
+        const take = parseInt(limit);
+        const skip = (parseInt(page) - 1) * take;
+
+        console.log(`Public search for academic users with filters: ${JSON.stringify(req.query)}`);
+
+        const where = {
+            user: {
+                is_active: true
+            }
+        };
+
+        if (job_title) {
+            where.job_title = {
+                contains: job_title,
+                mode: 'insensitive'
+            };
+        }
+
+        if (skills) {
+            const skillsArr = Array.isArray(skills) ? skills : skills.split(',').map(s => s.trim());
+            where.skills = { hasSome: skillsArr };
+        }
+
+        if (min_rating || max_rating) {
+            where.rating = {};
+            if (min_rating) where.rating.gte = parseFloat(min_rating);
+            if (max_rating) where.rating.lte = parseFloat(max_rating);
+        }
+
+        const total = await prisma.academicUsers.count({ where });
+        const users = await prisma.academicUsers.findMany({
+            where,
+            skip,
+            take,
+            orderBy: [
+                { rating: 'desc' },
+                { ratings_count: 'desc' },
+                { created_at: 'desc' }
+            ],
+            include: {
+                user: {
+                    select: {
+                        username: true,
+                        first_name_ar: true,
+                        last_name_ar: true,
+                        full_name_en: true,
+                        avatar: true
+                    }
+                }
+            }
+        });
+
+        return success(res, {
+            total,
+            page: parseInt(page),
+            limit: take,
+            totalPages: Math.ceil(total / take),
+            count: users.length,
+            users
+        }, 'Public search results for academic users');
+    } catch (err) {
+        next(err);
+    }
+};
+
 module.exports = {
     getAllAcademicUsers,
     getAcademicUserById,
@@ -422,10 +662,12 @@ module.exports = {
     deactivateAcademicUser,
     activateAcademicUser,
     searchAcademicUsers,
+    searchAcademicUsersPublic,
     uploadIdentityDocument,
     getSelfAcademicUserProfile,
     getAllAcademicUsersForPublic,
     getProfileForPublic,
     getMyBalance,
-    getUserBalanceByAdmin
+    getUserBalanceByAdmin,
+    getUserRatingPublic
 };

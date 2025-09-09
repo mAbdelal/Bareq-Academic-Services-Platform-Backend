@@ -4,7 +4,7 @@ const { hashPassword, comparePasswords, isValidEmail, isStrongPassword } = requi
 const { UnauthorizedError, BadRequestError, NotFoundError } = require('../utils/errors');
 const { success } = require('../utils/response');
 const crypto = require('crypto');
-const { RESET_TOKEN_EXPIRES_IN, FRONTEND_URL, NODE_ENV } = require('../config/env');
+const { RESET_TOKEN_EXPIRES_IN, FRONTEND_URL, NODE_ENV, JWT_ACCESS_EXPIRES_IN,JWT_REFRESH_EXPIRES_IN } = require('../config/env');
 const { sendEmail } = require("../utils/email");
 const Joi = require("joi");
 
@@ -22,6 +22,7 @@ function parseTimeToMilliseconds(timeString) {
     }
 }
 
+
 async function login(req, res, next) {
     try {
         const { email, password } = req.body;
@@ -34,47 +35,130 @@ async function login(req, res, next) {
             where: { email },
             include: {
                 admin: {
-                    include: {
-                        role: true, 
-                    },
+                    include: { role: true },
                 },
             },
         });
 
-        if (!user) throw new UnauthorizedError('Invalid credentials');
+        if (!user) throw new UnauthorizedError('البريد الالكتروني او كلمة المرو غير صحيحة');
 
         const valid = await comparePasswords(password, user.password_hash);
-        if (!valid) throw new UnauthorizedError('Invalid credentials');
-        if (!user.is_active) throw new UnauthorizedError('Account is inactive');
+        if (!valid) throw new UnauthorizedError('البريد الالكتروني او كلمة المرو غير صحيحة');
+        if (!user.is_active) throw new UnauthorizedError('الحساب غير مفعل');
 
         const role = user.admin?.role?.name || null;
 
         const payload = {
             id: user.id,
-            email: user.email,
             role,
             first_name_ar: user.first_name_ar,
             last_name_ar: user.last_name_ar,
-            full_name_en: user.full_name_en,
-            username: user.username,
+            avatar: user.avatar,
         };
 
         const accessToken = signAccessToken(payload);
         const refreshToken = signRefreshToken(payload);
 
-        return success(res, {
-            accessToken,
-            refreshToken,
-            user: payload,
-        }, 'Login successful');
+        res.cookie('accessToken', accessToken, {
+            httpOnly: true,
+            secure: process.env.NODE_ENV === 'production',
+            sameSite: 'strict',
+            maxAge: parseTimeToMilliseconds(JWT_ACCESS_EXPIRES_IN), 
+        });
+        res.cookie('refreshToken', refreshToken, {
+            httpOnly: true,
+            secure: process.env.NODE_ENV === 'production',
+            sameSite: 'strict',
+            maxAge: parseTimeToMilliseconds(JWT_REFRESH_EXPIRES_IN), 
+        });
+
+        res.cookie('userPayload', JSON.stringify(payload), {
+            httpOnly: false, 
+            secure: process.env.NODE_ENV === 'production',
+            sameSite: 'strict',
+            maxAge: parseTimeToMilliseconds(JWT_REFRESH_EXPIRES_IN), 
+        });
+
+
+        return success(res,  payload , 'Login successful');
     } catch (err) {
         next(err);
     }
 }
 
+async function logout(req, res, next) {
+    try {
+
+        res.clearCookie('accessToken', {
+            httpOnly: true,
+            secure: process.env.NODE_ENV === 'production',
+            sameSite: 'strict',
+        });
+        res.clearCookie('refreshToken', {
+            httpOnly: true,
+            secure: process.env.NODE_ENV === 'production',
+            sameSite: 'strict',
+        });
+        res.clearCookie('userPayload', {
+            httpOnly: false,
+            secure: process.env.NODE_ENV === 'production',
+            sameSite: 'strict',
+        });
+
+        return success(res, null, 'تم تسجيل الخروج بنجاح');
+    } catch (err) {
+        next(err);
+    }
+}
+
+
+// async function refreshToken(req, res, next) {
+//     try {
+//         const { refreshToken } = req.body;
+
+//         if (!refreshToken) throw new BadRequestError('No refresh token provided');
+
+//         const decoded = verifyRefreshToken(refreshToken);
+//         if (!decoded?.id) throw new UnauthorizedError('Invalid refresh token');
+
+//         const user = await prisma.users.findUnique({
+//             where: { id: decoded.id },
+//             include: {
+//                 admin: {
+//                     include: {
+//                         role: true
+//                     }
+//                 }
+//             }
+//         });
+
+//         if (!user) throw new UnauthorizedError('User not found');
+//         if (!user.is_active) throw new UnauthorizedError('Account is inactive');
+
+//         const role = user.admin?.role?.name || null;
+
+//         const payload = {
+//             id: user.id,
+//             role,
+//             first_name_ar: user.first_name_ar,
+//             last_name_ar: user.last_name_ar,
+//             avatar: user.username,
+//         };
+
+//         const newAccessToken = signAccessToken(payload);
+
+//         return success(res, {
+//             accessToken: newAccessToken,
+//             user: payload
+//         }, 'Token refreshed');
+//     } catch (err) {
+//         next(err);
+//     }
+// }
+
 async function refreshToken(req, res, next) {
     try {
-        const { refreshToken } = req.body;
+        const { refreshToken } = req.cookies; 
 
         if (!refreshToken) throw new BadRequestError('No refresh token provided');
 
@@ -85,11 +169,9 @@ async function refreshToken(req, res, next) {
             where: { id: decoded.id },
             include: {
                 admin: {
-                    include: {
-                        role: true
-                    }
-                }
-            }
+                    include: { role: true },
+                },
+            },
         });
 
         if (!user) throw new UnauthorizedError('User not found');
@@ -99,24 +181,41 @@ async function refreshToken(req, res, next) {
 
         const payload = {
             id: user.id,
-            email: user.email,
             role,
             first_name_ar: user.first_name_ar,
             last_name_ar: user.last_name_ar,
-            full_name_en: user.full_name_en,
-            username: user.username,
+            avatar: user.avatar,
         };
 
         const newAccessToken = signAccessToken(payload);
+        const newRefreshToken = signRefreshToken(payload);
 
-        return success(res, {
-            accessToken: newAccessToken,
-            user: payload
-        }, 'Token refreshed');
+        res.cookie('accessToken', newAccessToken, {
+            httpOnly: true,
+            secure: process.env.NODE_ENV === 'production',
+            sameSite: 'strict',
+            maxAge: parseTimeToMilliseconds(JWT_ACCESS_EXPIRES_IN), 
+        });
+        res.cookie('refreshToken', newRefreshToken, {
+            httpOnly: true,
+            secure: process.env.NODE_ENV === 'production',
+            sameSite: 'strict',
+            maxAge: parseTimeToMilliseconds(JWT_REFRESH_EXPIRES_IN), 
+        });
+
+        res.cookie('userPayload', JSON.stringify(payload), {
+            httpOnly: false, 
+            secure: process.env.NODE_ENV === 'production',
+            sameSite: 'strict',
+            maxAge: parseTimeToMilliseconds(JWT_REFRESH_EXPIRES_IN), 
+        });
+
+        return success(res, { user: payload }, 'Token refreshed');
     } catch (err) {
         next(err);
     }
 }
+
 
 async function forgotPassword(req, res, next) {
     try {
@@ -279,7 +378,7 @@ function registerUser(type) {
             });
 
             if (existingUser) {
-                throw new BadRequestError('Email or username already in use');
+                throw new BadRequestError('البريد الالكتروني او اسم المستخدم مستخدمين مسبقا');
             }
 
             const password_hash = await hashPassword(password);
@@ -380,6 +479,7 @@ function registerUser(type) {
 
 module.exports = {
     login,
+    logout,
     refreshToken,
     forgotPassword,
     resetPassword,

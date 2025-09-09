@@ -90,7 +90,9 @@ const searchRequestsForPublic = async (req, res, next) => {
             academic_category_id: Joi.number().integer(),
             academic_subcategory_id: Joi.number().integer(),
 
-            expected_delivery_days: Joi.number().integer().min(1),
+            min_delivery_days: Joi.number().integer().min(1),
+            max_delivery_days: Joi.number().integer().min(1),
+
             min_budget: Joi.number().min(0),
             max_budget: Joi.number().min(0),
 
@@ -106,7 +108,8 @@ const searchRequestsForPublic = async (req, res, next) => {
             title,
             academic_category_id,
             academic_subcategory_id,
-            expected_delivery_days,
+            min_delivery_days,
+            max_delivery_days,
             min_budget,
             max_budget,
             skills,
@@ -124,7 +127,10 @@ const searchRequestsForPublic = async (req, res, next) => {
             ...(title && { title: { contains: title, mode: 'insensitive' } }),
             ...(academic_category_id && { academic_category_id }),
             ...(academic_subcategory_id && { academic_subcategory_id }),
-            ...(expected_delivery_days && { expected_delivery_days }),
+            // Range for expected_delivery_days
+            ...(min_delivery_days && max_delivery_days && { expected_delivery_days: { gte: min_delivery_days, lte: max_delivery_days } }),
+            ...(min_delivery_days && !max_delivery_days && { expected_delivery_days: { gte: min_delivery_days } }),
+            ...(!min_delivery_days && max_delivery_days && { expected_delivery_days: { lte: max_delivery_days } }),
             ...(min_budget && max_budget && { budget: { gte: min_budget, lte: max_budget } }),
             ...(min_budget && !max_budget && { budget: { gte: min_budget } }),
             ...(!min_budget && max_budget && { budget: { lte: max_budget } }),
@@ -172,6 +178,7 @@ const searchRequestsForPublic = async (req, res, next) => {
         next(err);
     }
 };
+
 
 const getRequestByIdForAdmin = async (req, res, next) => {
     try {
@@ -241,6 +248,7 @@ const getRequestByIdForPublic = async (req, res, next) => {
                                 full_name_en: true,
                                 first_name_ar: true,
                                 last_name_ar: true,
+                                avatar: true
                             },
                         },
                     },
@@ -264,7 +272,8 @@ const getRequestByIdForPublic = async (req, res, next) => {
                                     select: {
                                         full_name_en: true,
                                         last_name_ar: true,
-                                        first_name_ar: true
+                                        first_name_ar: true,
+                                        avatar:true
                                     },
                                 }
                             }
@@ -289,6 +298,83 @@ const getRequestByIdForPublic = async (req, res, next) => {
         if (!request) throw new NotFoundError('Request not found or not available for public view');
 
         return success(res, request);
+    } catch (err) {
+        next(err);
+    }
+};
+
+const getMyOffers = async (req, res, next) => {
+    try {
+        const userId = req.user.id; 
+
+        const offers = await prisma.customRequestOffers.findMany({
+            where: {
+                provider_id: userId,
+            },
+            select: {
+                id: true,
+                price: true,
+                delivery_days: true,
+                message: true,
+                created_at: true,
+                updated_at: true,
+
+                // related request info
+                request: {
+                    select: {
+                        id: true,
+                        title: true,
+                        description: true,
+                        budget: true,
+                        accepted_offer_id:true,
+                        expected_delivery_days: true,
+                        status: true,
+                        created_at: true,
+                        requester: {
+                            select: {
+                                user: {
+                                    select: {
+                                        full_name_en: true,
+                                        first_name_ar: true,
+                                        last_name_ar: true,
+                                        avatar: true,
+                                    },
+                                },
+                            },
+                        },
+                        category: {
+                            select: {
+                                id: true,
+                                name: true,
+                            },
+                        },
+                        subcategory: {
+                            select: {
+                                id: true,
+                                name: true,
+                            },
+                        },
+                    },
+                },
+
+                // offer attachments
+                attachments: {
+                    select: {
+                        id: true,
+                        file_url: true,
+                        file_name: true,
+                        file_type: true,
+                        created_at: true,
+                    },
+                },
+            },
+            orderBy: {
+                created_at: "desc",
+            },
+        });
+
+
+        return success(res, offers);
     } catch (err) {
         next(err);
     }
@@ -325,12 +411,43 @@ const getMyRequestByID = async (req, res, next) => {
         const request = await prisma.customRequests.findUnique({
             where: { id },
             include: {
-                accepted_offer: true,
+                accepted_offer: {
+                    include: {
+                        provider: {
+                            include: {
+                                user: true,
+                            }
+                        },
+                    }
+                },
                 attachments: true,
-                deliverables: true,
                 category: true,
                 subcategory: true,
+                offers: {
+                    include: {
+                        provider: {
+                            include: {
+                                user: true,
+                            }
+                        },
+                    }
+                },
+                requester: {
+                    include: {
+                        user: true,
+                    }
+                },
                 CustomRequestTimeline: { orderBy: { created_at: 'asc' } },
+                dispute:{
+                    select:{
+                        id:true
+                    }
+                },
+                deliverables: {
+                    include: {
+                        attachments: true,
+                    }
+                }
             },
         });
 
@@ -350,7 +467,7 @@ const createRequestWithAttachments = async (req, res, next) => {
         const requester_id = req.user.id;
         const validFileTypes = ['gallery_image', 'gallery_video', 'general', 'cover'];
 
-        // Parse skills if it comes as JSON string
+        // Parse skills if it's a string
         if (typeof req.body.skills === 'string') {
             try {
                 req.body.skills = JSON.parse(req.body.skills);
@@ -358,8 +475,22 @@ const createRequestWithAttachments = async (req, res, next) => {
                 throw new BadRequestError('Invalid skills JSON.');
             }
         }
+        console.log({ body: req.body });
 
-        // Validate main request input (ignoring attachments_meta)
+        if (req.body.academic_category_id) {
+            req.body.academic_category_id = Number(req.body.academic_category_id);
+        }
+
+        if (req.body.academic_subcategory_id === 'null') {
+            req.body.academic_subcategory_id = null;
+        } else if (req.body.academic_subcategory_id) {
+            req.body.academic_subcategory_id = Number(req.body.academic_subcategory_id);
+        } else {
+            req.body.academic_subcategory_id = null;
+        }
+
+
+        // Validate request input
         const requestInputSchema = Joi.object({
             academic_category_id: Joi.number().integer().required(),
             academic_subcategory_id: Joi.number().integer().optional().allow(null),
@@ -375,7 +506,7 @@ const createRequestWithAttachments = async (req, res, next) => {
 
         const data = await requestInputSchema.validateAsync(req.body);
 
-        // Parse and validate attachments_meta
+        // Parse attachments metadata
         let attachments_meta = req.body.attachments_meta || [];
         if (typeof attachments_meta === 'string') {
             try {
@@ -391,29 +522,21 @@ const createRequestWithAttachments = async (req, res, next) => {
 
         const files = req.files || [];
 
-        // Validate file count
         if (attachments_meta.length !== files.length) {
             throw new BadRequestError('Number of attachments_meta items does not match number of uploaded files.');
         }
 
-        // Validate file types and ensure at least one is "cover"
-        let coverCount = 0;
+        // Validate each file_type
         attachments_meta.forEach(({ file_type }, i) => {
             if (!validFileTypes.includes(file_type)) {
                 throw new BadRequestError(`Invalid file_type "${file_type}" at index ${i}.`);
             }
-            if (file_type === 'cover') coverCount++;
         });
 
-        if (coverCount < 1) {
-            throw new BadRequestError('At least one attachment must be of type "cover".');
-        }
-
-        // Remove attachments_meta from data
+        // Remove attachments_meta from data for Prisma
         const { attachments_meta: _, ...prismaData } = data;
 
         const newRequest = await prisma.$transaction(async (tx) => {
-            // Create the custom request
             const request = await tx.customRequests.create({
                 data: {
                     ...prismaData,
@@ -445,9 +568,7 @@ const createRequestWithAttachments = async (req, res, next) => {
                     };
                 });
 
-                await tx.customRequestAttachments.createMany({
-                    data: attachmentsData,
-                });
+                await tx.customRequestAttachments.createMany({ data: attachmentsData });
             }
 
             return request;
@@ -458,6 +579,8 @@ const createRequestWithAttachments = async (req, res, next) => {
         next(err);
     }
 };
+
+
 
 const deleteRequest = async (req, res, next) => {
     try {
@@ -470,7 +593,7 @@ const deleteRequest = async (req, res, next) => {
 
         const request = await prisma.customRequests.findUnique({
             where: { id: request_id },
-            select: { requester_id: true },
+            select: { requester_id: true, status: true },
         });
 
         if (!request) {
@@ -481,15 +604,20 @@ const deleteRequest = async (req, res, next) => {
             throw new UnauthorizedError("You are not allowed to delete this request");
         }
 
+        if (request.status !== "open") {
+            throw new BadRequestError("the request not open");
+        }
+
         await prisma.customRequests.delete({
             where: { id: request_id },
         });
 
-        return success(res, {}, "Request deleted successfully")
+        return success(res, {}, "Request deleted successfully");
     } catch (err) {
         next(err);
     }
 };
+
 
 
 
@@ -829,7 +957,7 @@ const acceptSubmission = async (req, res, next) => {
 
             // 3. Update System Balance
             await tx.systemBalance.update({
-                where: { id: 1 }, 
+                where: { id: 1 },
                 data: {
                     total_balance: {
                         increment: commission,
@@ -997,13 +1125,14 @@ const disputeByProvider = async (req, res, next) => {
             include: { accepted_offer: true },
         });
         if (!request) throw new NotFoundError('Request not found');
-        if (request.accepted_offer?.provider_id !== provider_id) throw new ForbiddenError('Not The provider');
+        if (request.accepted_offer?.provider_id !== provider_id) throw new ForbiddenError('Not the provider');
         if (!['in_progress', 'submitted', 'owner_rejected'].includes(request.status)) {
             throw new BadRequestError('Cannot dispute at this status');
         }
 
+        let dispute;
         await prisma.$transaction(async (tx) => {
-            await createCustomRequestDispute({
+            dispute = await createCustomRequestDispute({
                 tx,
                 custom_request_id: request_id,
                 complainant_id: provider_id,
@@ -1027,7 +1156,7 @@ const disputeByProvider = async (req, res, next) => {
             });
         });
 
-        return success(res, {}, 'Dispute initiated by provider');
+        return success(res, { dispute }, 'Dispute initiated by provider');
     } catch (err) {
         next(err);
     }
@@ -1054,8 +1183,9 @@ const disputeByOwner = async (req, res, next) => {
             throw new BadRequestError('Cannot dispute at this status');
         }
 
+        let dispute;
         await prisma.$transaction(async (tx) => {
-            await createCustomRequestDispute({
+            dispute = await createCustomRequestDispute({
                 tx,
                 custom_request_id: request_id,
                 complainant_id: owner_id,
@@ -1079,11 +1209,12 @@ const disputeByOwner = async (req, res, next) => {
             });
         });
 
-        return success(res, {}, 'Dispute initiated by owner');
+        return success(res, { dispute }, 'Dispute initiated by owner');
     } catch (err) {
         next(err);
     }
 };
+
 
 
 
@@ -1106,6 +1237,7 @@ module.exports = {
     rateCustomRequest,
     disputeByProvider,
     disputeByOwner,
+    getMyOffers
 }
 
 
