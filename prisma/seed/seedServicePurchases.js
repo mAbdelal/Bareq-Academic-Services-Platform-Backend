@@ -19,17 +19,17 @@ async function main() {
         'completed',
         'buyer_rejected',
         'provider_rejected'
-    ]; 
+    ];
 
     const statusToActionMap = {
-        pending: { action: 'purchase', role: 'buyer' },
-        provider_rejected: { action: 'Provider_reject', role: 'provider' },
-        in_progress: { action: 'Provider_accept', role: 'provider' },
-        submitted: { action: 'submit', role: 'provider' },
-        disputed_by_provider: { action: 'dispute_provider', role: 'provider' },
-        disputed_by_buyer: { action: 'dispute_buyer', role: 'buyer' },
-        buyer_rejected: { action: 'buyer_reject', role: 'buyer' },
-        completed: { action: 'complete', role: 'buyer' }
+        pending: { action: 'Purchase', role: 'buyer' },
+        provider_rejected: { action: 'ProviderRejected', role: 'provider' },
+        in_progress: { action: 'ProviderAccepted', role: 'provider' },
+        submitted: { action: 'Submitted', role: 'provider' },
+        disputed_by_provider: { action: 'DisputeByProvider', role: 'provider' },
+        disputed_by_buyer: { action: 'DisputeByBuyer', role: 'buyer' },
+        buyer_rejected: { action: 'BuyerRejected', role: 'buyer' },
+        completed: { action: 'Completed', role: 'buyer' }
     };
 
     for (let i = 0; i < buyers.length; i++) {
@@ -51,20 +51,19 @@ async function main() {
             const timelineData = statusToActionMap[status];
             const actor_id = timelineData.role === 'buyer'
                 ? buyer.user_id
-                : service.owner_id;
+                : service.provider_id;
 
             if (!actor_id) {
-                console.warn(`⚠️ Skipping timeline for purchase ${purchase.id}: missing service.owner_id`);
+                console.warn(`⚠️ Skipping timeline for purchase ${purchase.id}: missing service.provider_id`);
                 continue;
             }
 
             await prisma.purchaseTimeline.create({
                 data: {
-                    purchase_id: purchase.id,
-                    actor_id,
-                    actor_role: timelineData.role,
+                    service_purchase_id: purchase.id,
+                    user_id: actor_id,
+                    role: timelineData.role,
                     action: timelineData.action,
-                    comment: `Auto-seeded action: ${timelineData.action}`,
                     created_at: timestamp
                 }
             });

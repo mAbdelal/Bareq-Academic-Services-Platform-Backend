@@ -57,7 +57,6 @@ async function main() {
                     actor_id: requester.user_id,
                     actor_role: 'owner',
                     action: 'request_created',
-                    comment: `تم إنشاء الطلب رقم ${i}`,
                 },
             });
 

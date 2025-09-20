@@ -2,72 +2,67 @@ const { PrismaClient } = require('@prisma/client');
 const prisma = new PrismaClient();
 
 async function main() {
-    // Get some service purchases
-    const purchases = await prisma.servicePurchases.findMany({
+    // Get some custom requests
+    const customRequests = await prisma.customRequests.findMany({
         take: 10,
         select: { id: true }
     });
 
-    if (purchases.length === 0) {
-        console.error('❌ لا يوجد بيانات في servicePurchases. الرجاء تنفيذ seed لجدول servicePurchases أولاً.');
+    if (customRequests.length === 0) {
+        console.error('❌ لا يوجد بيانات في customRequests. الرجاء تنفيذ seed لجدول customRequests أولاً.');
         return;
     }
 
     // Sample deliverables data
     const deliverablesData = [
         {
-            message: 'تم تسليم المشروع بنجاح مع جميع المتطلبات.',
-            buyer_comment: 'شكراً على العمل الرائع!',
-            provider_comment: 'سعيد بالتعامل معكم.',
+            message: 'تم تسليم المشروع المخصص بنجاح مع جميع المتطلبات.',
+            requester_comment: 'شكراً على العمل الرائع!',
             is_accepted: true,
         },
         {
-            message: 'تم رفع العرض التقديمي المطلوب.',
-            buyer_comment: 'العرض ممتاز.',
-            provider_comment: 'أي تعديلات إضافية؟',
+            message: 'تم رفع العرض التقديمي المطلوب للطلب المخصص.',
+            requester_comment: 'العرض ممتاز.',
             is_accepted: true,
         },
         {
-            message: 'تم إرسال الترجمة النهائية.',
-            buyer_comment: 'الترجمة دقيقة وسريعة.',
-            provider_comment: 'جاهز لأي تعديلات.',
+            message: 'تم إرسال الترجمة النهائية للطلب المخصص.',
+            requester_comment: 'الترجمة دقيقة وسريعة.',
             is_accepted: true,
         },
         {
-            message: 'تم تسليم تحليل البيانات.',
-            buyer_comment: 'التحليل مفصل وواضح.',
-            provider_comment: 'شكراً على الثقة.',
+            message: 'تم تسليم تحليل البيانات للطلب المخصص.',
+            requester_comment: 'التحليل مفصل وواضح.',
             is_accepted: true,
         },
         {
-            message: 'تم تطوير التطبيق وتسليمه.',
-            buyer_comment: 'التطبيق يعمل بشكل ممتاز.',
-            provider_comment: 'يسعدني رضاكم.',
+            message: 'تم تطوير التطبيق وتسليمه للطلب المخصص.',
+            requester_comment: 'التطبيق يعمل بشكل ممتاز.',
             is_accepted: true,
         },
     ];
 
-    // Seed deliverables for each purchase
-    for (let i = 0; i < purchases.length; i++) {
-        const purchase = purchases[i];
+    // Seed deliverables for each custom request
+    for (let i = 0; i < customRequests.length; i++) {
+        const request = customRequests[i];
         const deliverable = deliverablesData[i % deliverablesData.length];
 
         try {
-            await prisma.servicePurchaseDeliverables.create({
+            await prisma.requestImplementationDeliverables.create({
                 data: {
-                    purchase_id: purchase.id,
+                    custom_request_id: request.id,
                     message: deliverable.message,
-                    delivered_at: new Date(Date.now() - 1000 * 60 * 60 * 24 * (purchases.length - i)),
-                    buyer_comment: deliverable.buyer_comment,
+                    delivered_at: new Date(Date.now() - 1000 * 60 * 60 * 24 * (customRequests.length - i)),
+                    requester_comment: deliverable.requester_comment,
                     is_accepted: deliverable.is_accepted,
                     decision_at: deliverable.is_accepted
-                        ? new Date(Date.now() - 1000 * 60 * 60 * 24 * (purchases.length - i - 1))
+                        ? new Date(Date.now() - 1000 * 60 * 60 * 24 * (customRequests.length - i - 1))
                         : null,
                 },
             });
-            console.log(`✅ Seeded deliverable for purchase: ${purchase.id}`);
+            console.log(`✅ Seeded request implementation deliverable for custom request: ${request.id}`);
         } catch (error) {
-            console.error(`❌ Failed to seed deliverable for purchase: ${purchase.id}`, error);
+            console.error(`❌ Failed to seed request implementation deliverable for custom request: ${request.id}`, error);
         }
     }
 }

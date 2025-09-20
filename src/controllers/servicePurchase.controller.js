@@ -117,7 +117,7 @@ const getMyPurchases = async (req, res, next) => {
                                         first_name_ar: true,
                                         last_name_ar: true,
                                         full_name_en: true,
-                                        avart:true
+                                        avatar:true
                                     }
                                 }
                             }

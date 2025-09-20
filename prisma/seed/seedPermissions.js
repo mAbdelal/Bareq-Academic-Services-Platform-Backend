@@ -8,6 +8,7 @@ async function seedPermissions() {
         { name: 'manage_services', description: 'Create and manage services' },
         { name: 'manage_requests', description: 'Manage custom requests' },
         { name: 'view_reports', description: 'View system reports and analytics' },
+        { name: 'resolve_disputes', description: 'Resolve disputes between users' },
         { name: 'manage_role_permissions', description: 'manage_role_permissions' },
         { name: 'manage_roles', description: 'manage_roles' },
         { name: 'manage_permissions', description: 'manage_permissions' },

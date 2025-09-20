@@ -15,12 +15,12 @@ const sampleComments = [
 ];
 
 async function seedRatings() {
-    // Fetch academic users (raters and ratees)
+    // Fetch academic users (raters)
     const academicUsers = await prisma.academicUsers.findMany();
     const services = await prisma.services.findMany();
     const customRequests = await prisma.customRequests.findMany();
 
-    if (academicUsers.length < 2) {
+    if (academicUsers.length < 1) {
         console.error('🚫 Not enough academic users to create ratings.');
         return;
     }
@@ -32,12 +32,8 @@ async function seedRatings() {
         // Randomly decide to rate a service or a custom request
         const isServiceRating = Math.random() < 0.7; // 70% chance service, 30% custom request
 
-        // Pick random rater and ratee (different users)
-        let rater = getRandomItem(academicUsers);
-        let ratee;
-        do {
-            ratee = getRandomItem(academicUsers);
-        } while (ratee.user_id === rater.user_id);
+        // Pick random rater
+        const rater = getRandomItem(academicUsers);
 
         // Prepare common rating data
         const ratingValue = getRandomRating();
@@ -52,7 +48,6 @@ async function seedRatings() {
                 await prisma.ratings.create({
                     data: {
                         rater_id: rater.user_id,
-                        ratee_id: ratee.user_id,
                         service_id: service.id,
                         rating: ratingValue,
                         comment,
@@ -65,7 +60,6 @@ async function seedRatings() {
                 await prisma.ratings.create({
                     data: {
                         rater_id: rater.user_id,
-                        ratee_id: ratee.user_id,
                         custom_request_id: customRequest.id,
                         rating: ratingValue,
                         comment,

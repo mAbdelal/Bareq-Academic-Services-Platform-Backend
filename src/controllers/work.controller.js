@@ -449,7 +449,6 @@ const getUserWorksForPublic = async (req, res, next) => {
 const getMyWorks = async (req, res, next) => {
     try {
         const userId = req.user.id;
-        console.log('Fetching works for user:', userId);
 
         const works = await prisma.works.findMany({
             where: { user_id: userId },

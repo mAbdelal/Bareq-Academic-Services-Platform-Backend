@@ -1,6 +1,6 @@
 const prisma = require("../config/prisma");
 const Joi = require("joi");
-const { BadRequestError, NotFoundError, ForbiddenError } = require("../utils/errors");
+const { BadRequestError, NotFoundError, ForbiddenError, UnauthorizedError } = require("../utils/errors");
 const { success } = require("../utils/response");
 const { DISPUTE_PENALTY_RATE, PLATFORM_COMMISSION_RATE } = require("../config/env")
 
@@ -347,28 +347,65 @@ const getMyDisputes = async (req, res, next) => {
             where: {
                 OR: [
                     { complainant_id: user_id },
-                    { respondent_id: user_id }
-                ]
+                    { respondent_id: user_id },
+                ],
             },
-            orderBy: { created_at: "desc" }
+            include: {
+                servicePurchase: {
+                    include: {
+                        service: true,
+                    },
+                },
+                customRequest: true,
+                complainant: {
+                    include: { user: true }, // to get avatar/username
+                },
+                respondent: {
+                    include: { user: true },
+                },
+            },
+            orderBy: { created_at: "desc" },
         });
 
-        const disputesWithRole = disputes.map(dispute => {
+        const disputesWithExtras = disputes.map(dispute => {
             let userRole = null;
-            if (dispute.complainant_id === user_id) userRole = "complainant";
-            else if (dispute.respondent_id === user_id) userRole = "respondent";
+            let otherParticipant = null;
+
+            if (dispute.complainant_id === user_id) {
+                userRole = "complainant";
+                otherParticipant = dispute.respondent;
+            } else if (dispute.respondent_id === user_id) {
+                userRole = "respondent";
+                otherParticipant = dispute.complainant;
+            }
+
+            // Get related title
+            let title = null;
+            if (dispute.servicePurchase?.service?.title) {
+                title = dispute.servicePurchase.service.title;
+            } else if (dispute.customRequest?.title) {
+                title = dispute.customRequest.title;
+            }
 
             return {
                 ...dispute,
-                userRole
+                userRole,
+                title,
+                otherParticipant: {
+                    id: otherParticipant?.user_id,
+                    first_name_ar: otherParticipant?.user?.first_name_ar,
+                    last_name_ar: otherParticipant?.user?.last_name_ar,
+                    avatar: otherParticipant?.user?.avatar,
+                },
             };
         });
 
-        return success(res, disputesWithRole, "Your disputes");
+        return success(res, disputesWithExtras, "Your disputes");
     } catch (err) {
         next(err);
     }
 };
+
 
 
 const adminResolveCustomRequestDispute = async (req, res, next) => {
@@ -746,8 +783,11 @@ const searchDisputes = async (req, res, next) => {
 };
 
 
-const getServicePurchaseDisputeByIdForAdmin = async (req, res, next) => {
+
+
+const getDisputeById = async (req, res, next) => {
     try {
+        const user_id = req.user.id;
         const schema = Joi.object({
             id: Joi.string().uuid().required()
         });
@@ -756,94 +796,75 @@ const getServicePurchaseDisputeByIdForAdmin = async (req, res, next) => {
         const dispute = await prisma.disputes.findUnique({
             where: { id },
             include: {
-                complainant: true,
-                respondent: true,
-                resolvedByAdmin: true,
-                servicePurchase: {
-                    include: {
-                        service: true,
-                        buyer: true,
-                        deliverables: {
-                            include: {
-                                attachments: true
-                            }
-                        },
-                        disputes: true,
-                        timeline: {
-                            include: {
-                                user: true
-                            }
-                        },
-                        transaction: true,
-                        chat: {
-                            include: {
-                                messages: {
-                                    include: {
-                                        attachments: true,
-                                        sender: true
+                customRequest: {
+                    select: {
+                        accepted_offer: {
+                            select: {
+                                chat: {
+                                    select: {
+                                        id: true
                                     }
                                 }
                             }
                         }
+
                     }
-                }
+                },
+                servicePurchase: {
+                    select: {
+                        chat: {
+                            select: {
+                                id: true
+                            }
+                        }
+
+                    }
+                },
+                complainant: {
+                    include: {
+                        user: {
+                            select: {
+                                id: true,
+                                avatar: true,
+                                first_name_ar: true,
+                                last_name_ar: true
+                            }
+                        }
+                    }
+                },
+                respondent: {
+                    include: {
+                        user: {
+                            select: {
+                                id: true,
+                                avatar: true,
+                                first_name_ar: true,
+                                last_name_ar: true
+                            }
+                        }
+                    }
+                },
+                resolvedByAdmin: {
+                    include: {
+                        user: {
+                            select: {
+                                id: true,
+                                avatar: true,
+                                first_name_ar: true,
+                                last_name_ar: true
+                            }
+                        }
+                    }
+                },
             }
         });
 
-        if (!dispute || !dispute.service_purchase_id) {
-            throw new NotFoundError("Service purchase dispute not found");
+        if (!dispute) {
+            throw new NotFoundError("dispute not found");
         }
 
-        return success(res, dispute, "Service purchase dispute details");
-    } catch (err) {
-        next(err);
-    }
-};
-
-const getCustomRequestDisputeByIdForAdmin = async (req, res, next) => {
-    try {
-        const schema = Joi.object({
-            id: Joi.string().uuid().required()
-        });
-        const { id } = await schema.validateAsync(req.params);
-
-        const dispute = await prisma.disputes.findUnique({
-            where: { id },
-            include: {
-                complainant: true,
-                respondent: true,
-                resolvedByAdmin: true,
-                customRequest: {
-                    include: {
-                        requester: true,
-                        accepted_offer: true,
-                        offers: true,
-                        attachments: true,
-                        dispute: true,
-                        transactions: true,
-                        deliverables: {
-                            include: {
-                                attachments: true
-                            }
-                        },
-                        CustomRequestTimeline: true,
-                        chat: {
-                            include: {
-                                messages: {
-                                    include: {
-                                        attachments: true,
-                                        sender: true
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        });
-
-        if (!dispute || !dispute.custom_request_id) {
-            throw new NotFoundError("Custom request dispute not found");
+        if (dispute.respondent.user.id !== user_id || dispute.complainant.user.id !== user_id || req.hasPermission) {
+            throw new UnauthorizedError('you are not authorized to show this dispute')
         }
 
         return success(res, dispute, "Custom request dispute details");
@@ -852,45 +873,11 @@ const getCustomRequestDisputeByIdForAdmin = async (req, res, next) => {
     }
 };
 
-const getDisputeByIdForUser = async (req, res, next) => {
-    try {
-        const schema = Joi.object({
-            id: Joi.string().uuid().required()
-        });
-
-        const { id } = await schema.validateAsync(req.params);
-        const user_id = req.user.id;
-
-        const dispute = await prisma.disputes.findUnique({
-            where: { id },
-            include: {
-                customRequest: true,
-                servicePurchase: true,
-                resolvedByAdmin: true,
-                transactions: true
-            }
-        });
-
-        if (!dispute) {
-            throw new NotFoundError("Dispute not found");
-        }
-
-        if (dispute.complainant_id !== user_id && dispute.respondent_id !== user_id) {
-            throw new ForbiddenError("You are not authorized to view this dispute");
-        }
-
-        return success(res, dispute, "Dispute details");
-    } catch (err) {
-        next(err);
-    }
-};
 
 module.exports = {
-    getCustomRequestDisputeByIdForAdmin,
-    getServicePurchaseDisputeByIdForAdmin,
     getMyDisputes,
     searchDisputes,
-    getDisputeByIdForUser,
+    getDisputeById,
     adminResolveServicePurchaseDispute,
     adminResolveCustomRequestDispute
 }

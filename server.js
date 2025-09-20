@@ -1,5 +1,5 @@
 const app = require('./src/app');
-const { NODE_ENV, PORT } = require('./src/config/env');
+const { NODE_ENV, PORT, CLIENT_URL } = require('./src/config/env');
 const { Server } = require('socket.io');
 const setupSocket = require('./src/socket/index')
 
@@ -24,8 +24,9 @@ if (NODE_ENV === 'production') {
 
 const io = new Server(server, {
     cors: {
-        origin: "*",
-        methods: ["GET", "POST"]
+        origin: CLIENT_URL,
+        methods: ["GET", "POST"],
+        credentials: true, 
     }
 });
 

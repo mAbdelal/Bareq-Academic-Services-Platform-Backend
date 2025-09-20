@@ -42,26 +42,23 @@ async function main() {
         },
     ];
 
-    // Seed deliverables for each purchase, cycling through deliverablesData
+    // Seed deliverables for each purchase
     for (let i = 0; i < purchases.length; i++) {
         const purchase = purchases[i];
         const deliverable = deliverablesData[i % deliverablesData.length];
-
-        const deliveredAt = new Date(Date.now() - 1000 * 60 * 60 * 24 * (purchases.length - i));
-        const decisionAt = deliverable.is_accepted
-            ? new Date(Date.now() - 1000 * 60 * 60 * 24 * (purchases.length - i - 1))
-            : null;
 
         try {
             await prisma.servicePurchaseDeliverables.create({
                 data: {
                     purchase_id: purchase.id,
                     message: deliverable.message,
+                    delivered_at: new Date(Date.now() - 1000 * 60 * 60 * 24 * (purchases.length - i)),
                     buyer_comment: deliverable.buyer_comment,
-                    delivered_at: deliveredAt,
                     is_accepted: deliverable.is_accepted,
-                    decision_at: decisionAt,
-                }
+                    decision_at: deliverable.is_accepted
+                        ? new Date(Date.now() - 1000 * 60 * 60 * 24 * (purchases.length - i - 1))
+                        : null,
+                },
             });
             console.log(`✅ Seeded deliverable for purchase: ${purchase.id}`);
         } catch (error) {

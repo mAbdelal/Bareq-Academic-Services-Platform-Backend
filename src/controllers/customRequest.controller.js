@@ -43,7 +43,6 @@ const searchRequestsForAdmin = async (req, res, next) => {
         } else if (Array.isArray(skills)) {
             skillsArray = skills;
         }
-        console.log({ skillsArray })
 
         const where = {
             ...(title && { title: { contains: title, mode: 'insensitive' } }),
@@ -159,6 +158,7 @@ const searchRequestsForPublic = async (req, res, next) => {
                                     first_name_ar: true,
                                     last_name_ar: true,
                                     full_name_en: true,
+                                    avatar:true
                                 },
                             }
                         },
@@ -475,7 +475,6 @@ const createRequestWithAttachments = async (req, res, next) => {
                 throw new BadRequestError('Invalid skills JSON.');
             }
         }
-        console.log({ body: req.body });
 
         if (req.body.academic_category_id) {
             req.body.academic_category_id = Number(req.body.academic_category_id);

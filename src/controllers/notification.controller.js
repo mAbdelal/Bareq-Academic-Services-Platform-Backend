@@ -34,8 +34,9 @@ const getMyNotifications = async (req, res, next) => {
             where: { user_id },
             orderBy: { created_at: "desc" },
         });
+        console.log({notifications})
 
-        return success(res, notifications, "Your notifications retrieved.");
+        return success(res, notifications);
     } catch (err) {
         next(err);
     }

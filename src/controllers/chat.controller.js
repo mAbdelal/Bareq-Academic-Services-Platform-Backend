@@ -450,7 +450,6 @@ const getOrCreateGeneralChat = async (req, res, next) => {
             });
         }
 
-        // 3️⃣ تجهيز الاستجابة
         const chatResponse = {
             ...chat,
             firstPart: {
