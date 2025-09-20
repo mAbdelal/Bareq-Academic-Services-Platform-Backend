@@ -2,4 +2,5 @@ node_modules
 .env
 /src/generated/prisma
 certs
-uploads
+uploads/*
+!uploads/images-1.jpg
