@@ -4,3 +4,4 @@ node_modules
 certs
 uploads/*
 !uploads/images-1.jpg
+!.env.example
